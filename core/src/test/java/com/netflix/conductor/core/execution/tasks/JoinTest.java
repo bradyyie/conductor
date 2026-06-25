@@ -12,15 +12,21 @@
  */
 package com.netflix.conductor.core.execution.tasks;
 
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 import org.junit.Test;
 
 import com.netflix.conductor.common.metadata.workflow.WorkflowTask;
 import com.netflix.conductor.core.config.ConductorProperties;
+import com.netflix.conductor.core.execution.WorkflowExecutor;
 import com.netflix.conductor.model.TaskModel;
+import com.netflix.conductor.model.WorkflowModel;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -124,5 +130,61 @@ public class JoinTest {
 
         // isAsync should always return true
         assertTrue(join.isAsync());
+    }
+
+    private static TaskModel completedForkedTask(String refName, Map<String, Object> output) {
+        TaskModel task = new TaskModel();
+        task.setReferenceTaskName(refName);
+        task.setStatus(TaskModel.Status.COMPLETED);
+        task.setWorkflowTask(new WorkflowTask());
+        task.setOutputData(output);
+        return task;
+    }
+
+    @Test
+    public void capturesForkedOutputsForSmallFork() {
+        Join join = new Join(mock(ConductorProperties.class));
+        Map<String, Object> o1 = new HashMap<>(Map.of("k", "v1"));
+        Map<String, Object> o2 = new HashMap<>(Map.of("k", "v2"));
+        WorkflowModel workflow = new WorkflowModel();
+        workflow.setTasks(List.of(completedForkedTask("t1", o1), completedForkedTask("t2", o2)));
+
+        TaskModel joinTask = new TaskModel();
+        joinTask.setWorkflowTask(new WorkflowTask());
+        Map<String, Object> input = new HashMap<>();
+        input.put("joinOn", List.of("t1", "t2"));
+        joinTask.setInputData(input);
+
+        boolean done = join.execute(workflow, joinTask, mock(WorkflowExecutor.class));
+
+        assertTrue(done);
+        assertEquals(TaskModel.Status.COMPLETED, joinTask.getStatus());
+        assertEquals(o1, joinTask.getOutputData().get("t1"));
+        assertEquals(o2, joinTask.getOutputData().get("t2"));
+    }
+
+    @Test
+    public void skipsForkedOutputsWhenCaptureOutputDisabled() {
+        Join join = new Join(mock(ConductorProperties.class));
+        WorkflowModel workflow = new WorkflowModel();
+        workflow.setTasks(
+                List.of(
+                        completedForkedTask("t1", new HashMap<>(Map.of("k", "v1"))),
+                        completedForkedTask("t2", new HashMap<>(Map.of("k", "v2")))));
+
+        TaskModel joinTask = new TaskModel();
+        joinTask.setWorkflowTask(new WorkflowTask());
+        Map<String, Object> input = new HashMap<>();
+        input.put("joinOn", List.of("t1", "t2"));
+        input.put("captureOutput", false);
+        joinTask.setInputData(input);
+
+        boolean done = join.execute(workflow, joinTask, mock(WorkflowExecutor.class));
+
+        // Join still completes; it just does not copy the forked outputs into its own output.
+        assertTrue(done);
+        assertEquals(TaskModel.Status.COMPLETED, joinTask.getStatus());
+        assertFalse(joinTask.getOutputData().containsKey("t1"));
+        assertFalse(joinTask.getOutputData().containsKey("t2"));
     }
 }

@@ -34,6 +34,14 @@ public class Join extends WorkflowSystemTask {
 
     @VisibleForTesting static final double EVALUATION_OFFSET_BASE = 1.2;
 
+    /**
+     * Fan-out size at or above which the join stops copying every forked task's output into its own
+     * output by default, to bound the join task's payload/memory for very large dynamic forks.
+     * Overridable per task via the boolean {@code captureOutput} input parameter (backported from
+     * Orkes).
+     */
+    @VisibleForTesting static final int LARGE_FORK_LIMIT = 500;
+
     private final ConductorProperties properties;
 
     public Join(ConductorProperties properties) {
@@ -56,6 +64,15 @@ public class Join extends WorkflowSystemTask {
                             .toList();
         }
 
+        // Large-fork scaling (backported from Orkes): for very large fan-outs, skip copying every
+        // forked task's output into the join output to bound memory/payload size. Callers can force
+        // the behaviour either way via the boolean "captureOutput" task input.
+        boolean captureOutput = joinOn.size() < LARGE_FORK_LIMIT;
+        Object captureOutputOverride = task.getInputData().get("captureOutput");
+        if (captureOutputOverride != null) {
+            captureOutput = Boolean.parseBoolean(String.valueOf(captureOutputOverride));
+        }
+
         boolean allTasksTerminal =
                 joinOn.stream()
                         .map(workflow::getTaskByRefName)
@@ -70,8 +87,8 @@ public class Join extends WorkflowSystemTask {
 
             TaskModel.Status taskStatus = forkedTask.getStatus();
 
-            // Only add to task output if it's not empty
-            if (!forkedTask.getOutputData().isEmpty()) {
+            // Only add to task output if it's not empty and output capture is enabled
+            if (captureOutput && !forkedTask.getOutputData().isEmpty()) {
                 task.addOutput(joinOnRef, forkedTask.getOutputData());
             }
 
