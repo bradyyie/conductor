@@ -842,4 +842,16 @@ public class ForkJoinDynamicTaskMapperTest {
         // Verify that the fork task has the executed flag set to true
         assertEquals("Fork task should be marked as executed", true, forkTask.isExecuted());
     }
+
+    @Test
+    public void getDynamicTasksSimpleFailsFastWhenForkTaskTypeIsNotAString() {
+        Map<String, Object> input = new HashMap<>();
+        input.put("forkTaskType", 123); // not a String -> must fail fast, not ClassCastException
+
+        expectedException.expect(TerminateWorkflowException.class);
+        expectedException.expectMessage("forkTaskType");
+
+        forkJoinDynamicTaskMapper.getDynamicTasksSimple(
+                new WorkflowTask(), input, "parentRef", false);
+    }
 }

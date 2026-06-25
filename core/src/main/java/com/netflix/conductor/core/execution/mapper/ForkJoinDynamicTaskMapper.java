@@ -275,6 +275,10 @@ public class ForkJoinDynamicTaskMapper implements TaskMapper {
         TaskModel joinTask = createJoinTask(workflowModel, joinWorkflowTask, joinInput);
         mappedTasks.add(joinTask);
 
+        // Stamp the dynamic-fork parent reference on every mapped task so nested dynamic forks
+        // can resolve their owning FORK_JOIN_DYNAMIC task (backported from Orkes).
+        mappedTasks.forEach(t -> t.setParentTaskReferenceName(workflowTask.getTaskReferenceName()));
+
         return mappedTasks;
     }
 
@@ -420,16 +424,16 @@ public class ForkJoinDynamicTaskMapper implements TaskMapper {
             boolean hasMoreThanOneFork)
             throws TerminateWorkflowException {
 
-        String forkSubWorkflowName = (String) input.get("forkTaskWorkflow");
-        String forkSubWorkflowVersionStr = (String) input.get("forkTaskWorkflowVersion");
+        String forkSubWorkflowName = getStringInput(input, "forkTaskWorkflow");
+        String forkSubWorkflowVersionStr = getStringInput(input, "forkTaskWorkflowVersion");
         Integer forkSubWorkflowVersion = null;
         try {
             forkSubWorkflowVersion = Integer.parseInt(forkSubWorkflowVersionStr);
         } catch (NumberFormatException nfe) {
         }
 
-        String forkTaskType = (String) input.get("forkTaskType");
-        String forkTaskName = (String) input.get("forkTaskName");
+        String forkTaskType = getStringInput(input, "forkTaskType");
+        String forkTaskName = getStringInput(input, "forkTaskName");
         if (forkTaskType != null
                 && (systemTaskRegistry.isSystemTask(forkTaskType))
                 && forkTaskName == null) {
@@ -481,6 +485,26 @@ public class ForkJoinDynamicTaskMapper implements TaskMapper {
                     forkTask.getTaskReferenceName(), forkTask.getInputParameters());
         }
         return new ImmutablePair<>(dynamicForkWorkflowTasks, dynamicForkTasksInput);
+    }
+
+    /**
+     * Reads a String-valued entry from the dynamic-fork input, failing fast with a clear message
+     * when the value is present but not a String. This avoids an opaque {@link ClassCastException}
+     * from a raw cast when a workflow supplies a non-String value (backported from Orkes).
+     */
+    private String getStringInput(Map<String, Object> input, String key)
+            throws TerminateWorkflowException {
+        Object value = input.get(key);
+        if (value == null) {
+            return null;
+        }
+        if (!(value instanceof String)) {
+            throw new TerminateWorkflowException(
+                    String.format(
+                            "FORK_JOIN_DYNAMIC task input parameter '%s' is expected to be a String, but got %s: %s",
+                            key, value.getClass().getSimpleName(), value));
+        }
+        return (String) value;
     }
 
     private WorkflowTask generateWorkflowTask(
