@@ -122,6 +122,19 @@ public abstract class WorkflowSystemTask {
         return true;
     }
 
+    /**
+     * Whether this task should take precedence over another system task registered for the same
+     * {@link #getTaskType()}. This is the seam that lets an add-on module (e.g. an enterprise
+     * edition) replace a built-in system task by registering its own bean with {@code isOverride()
+     * == true}, instead of having to exclude the default bean from component scanning. Defaults to
+     * {@code false} (a regular, non-overriding task).
+     *
+     * @return true if this task overrides the default task of the same type
+     */
+    public boolean isOverride() {
+        return false;
+    }
+
     @Override
     public String toString() {
         return taskType;

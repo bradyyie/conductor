@@ -37,6 +37,7 @@ import com.netflix.conductor.common.utils.ExternalPayloadStorage;
 import com.netflix.conductor.core.events.EventQueueProvider;
 import com.netflix.conductor.core.exception.TransientException;
 import com.netflix.conductor.core.execution.mapper.TaskMapper;
+import com.netflix.conductor.core.execution.tasks.SystemTaskRegistry;
 import com.netflix.conductor.core.execution.tasks.WorkflowSystemTask;
 import com.netflix.conductor.core.listener.TaskStatusListener;
 import com.netflix.conductor.core.listener.TaskStatusListenerStub;
@@ -118,21 +119,38 @@ public class ConductorCoreConfiguration {
     @Bean
     @Qualifier("taskMappersByTaskType")
     public Map<String, TaskMapper> getTaskMappers(List<TaskMapper> taskMappers) {
-        // Return mutable map so annotated task mappers can be added
+        // Return mutable map so annotated task mappers can be added.
+        // A mapper marked isOverride() replaces a same-typed default; otherwise the first
+        // registered mapper wins (preserving historic tolerance of duplicate non-override mappers).
         return taskMappers.stream()
                 .collect(
                         Collectors.toMap(
                                 TaskMapper::getTaskType,
                                 identity(),
-                                (a, b) -> a,
+                                ConductorCoreConfiguration::preferOverridingMapper,
                                 java.util.HashMap::new));
+    }
+
+    private static TaskMapper preferOverridingMapper(TaskMapper a, TaskMapper b) {
+        if (a.isOverride() && b.isOverride()) {
+            throw new IllegalStateException(
+                    "Multiple overriding task mappers registered for type '"
+                            + a.getTaskType()
+                            + "': "
+                            + a.getClass().getName()
+                            + " and "
+                            + b.getClass().getName());
+        }
+        return b.isOverride() ? b : a;
     }
 
     @Bean
     @Qualifier(ASYNC_SYSTEM_TASKS_QUALIFIER)
     public Set<WorkflowSystemTask> asyncSystemTasks(Set<WorkflowSystemTask> allSystemTasks) {
-        // Return mutable set so annotated tasks can be added
-        return allSystemTasks.stream()
+        // Resolve any same-typed override first (an overriding task may differ in isAsync() from
+        // the default it replaces), then select async tasks. Return a mutable set so annotated
+        // tasks can be added.
+        return SystemTaskRegistry.byType(allSystemTasks).values().stream()
                 .filter(WorkflowSystemTask::isAsync)
                 .collect(Collectors.toCollection(java.util.HashSet::new));
     }

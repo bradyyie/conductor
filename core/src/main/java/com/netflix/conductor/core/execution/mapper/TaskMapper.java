@@ -23,4 +23,15 @@ public interface TaskMapper {
 
     List<TaskModel> getMappedTasks(TaskMapperContext taskMapperContext)
             throws TerminateWorkflowException;
+
+    /**
+     * Whether this mapper should take precedence over another mapper registered for the same {@link
+     * #getTaskType()}. This is the seam that lets an add-on module (e.g. an enterprise edition)
+     * replace a built-in mapper by registering its own bean with {@code isOverride() == true},
+     * instead of having to exclude the default bean from component scanning. Defaults to {@code
+     * false} (a regular, non-overriding mapper).
+     */
+    default boolean isOverride() {
+        return false;
+    }
 }

@@ -12,6 +12,7 @@
  */
 package com.netflix.conductor.core.execution.tasks;
 
+import java.util.Collection;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -34,11 +35,41 @@ public class SystemTaskRegistry {
     private final Map<String, WorkflowSystemTask> registry;
 
     public SystemTaskRegistry(Set<WorkflowSystemTask> tasks) {
-        this.registry =
-                tasks.stream()
-                        .collect(
-                                Collectors.toMap(
-                                        WorkflowSystemTask::getTaskType, Function.identity()));
+        this.registry = byType(tasks);
+    }
+
+    /**
+     * Collates system tasks by their task type, resolving same-typed duplicates via {@link
+     * WorkflowSystemTask#isOverride()} precedence. Exposed so other wiring (e.g. the async system
+     * task set) resolves overrides identically.
+     */
+    public static Map<String, WorkflowSystemTask> byType(Collection<WorkflowSystemTask> tasks) {
+        return tasks.stream()
+                .collect(
+                        Collectors.toMap(
+                                WorkflowSystemTask::getTaskType,
+                                Function.identity(),
+                                SystemTaskRegistry::preferOverride));
+    }
+
+    /**
+     * Resolves two system tasks registered for the same task type. Exactly one must be marked as an
+     * override ({@link WorkflowSystemTask#isOverride()}); that one wins. If neither or both are
+     * overrides it is an ambiguous configuration and we fail fast (this also preserves the historic
+     * behaviour of rejecting duplicate non-override system task types).
+     */
+    private static WorkflowSystemTask preferOverride(WorkflowSystemTask a, WorkflowSystemTask b) {
+        if (a.isOverride() == b.isOverride()) {
+            throw new IllegalStateException(
+                    "Multiple system tasks registered for type '"
+                            + a.getTaskType()
+                            + "': "
+                            + a.getClass().getName()
+                            + " and "
+                            + b.getClass().getName()
+                            + ". Mark exactly one with isOverride()=true to override the other.");
+        }
+        return a.isOverride() ? a : b;
     }
 
     public WorkflowSystemTask get(String taskType) {
