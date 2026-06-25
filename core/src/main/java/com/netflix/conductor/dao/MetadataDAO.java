@@ -87,7 +87,9 @@ public interface MetadataDAO {
     /**
      * @return List the latest versions of the workflow definitions
      */
-    List<WorkflowDef> getAllWorkflowDefsLatestVersions();
+    default List<WorkflowDef> getAllWorkflowDefsLatestVersions() {
+        throw new UnsupportedOperationException();
+    }
 
     /**
      * Returns distinct workflow definition names without loading full definition bodies.

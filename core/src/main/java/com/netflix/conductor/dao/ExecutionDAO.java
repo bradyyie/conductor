@@ -204,17 +204,23 @@ public interface ExecutionDAO {
      * @return true if the event was added. false otherwise when the event by id is already already
      *     stored.
      */
-    boolean addEventExecution(EventExecution eventExecution);
+    default boolean addEventExecution(EventExecution eventExecution) {
+        throw new UnsupportedOperationException();
+    }
 
     /**
      * @param eventExecution Event execution to be updated
      */
-    void updateEventExecution(EventExecution eventExecution);
+    default void updateEventExecution(EventExecution eventExecution) {
+        throw new UnsupportedOperationException();
+    }
 
     /**
      * @param eventExecution Event execution to be removed
      */
-    void removeEventExecution(EventExecution eventExecution);
+    default void removeEventExecution(EventExecution eventExecution) {
+        throw new UnsupportedOperationException();
+    }
 
     // ---------------------------------------------------------------------------------------------
     // Engine extensions (backported from Orkes). Event-task support and data-persistence modes.
@@ -326,5 +332,17 @@ public interface ExecutionDAO {
 
     default boolean writesToArchiveShards() {
         return false;
+    }
+
+    default List<String> getRunningWorkflowIds() {
+        throw new UnsupportedOperationException();
+    }
+
+    default Map<String, Long> getRunningWorkflowCountByName(int maxNames) {
+        return getRunningWorkflowCountByName();
+    }
+
+    default boolean removeWorkflowWithExpiry(WorkflowModel workflow, int ttlSeconds) {
+        return removeWorkflowWithExpiry(workflow.getWorkflowId(), ttlSeconds);
     }
 }
