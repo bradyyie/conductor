@@ -181,7 +181,7 @@ public class TestWorkflowExecutor {
                         mock(SystemTaskRegistry.class)));
         taskMappers.put(
                 USER_DEFINED.name(), new UserDefinedTaskMapper(parametersUtils, metadataDAO));
-        taskMappers.put(SIMPLE.name(), new SimpleTaskMapper(parametersUtils));
+        taskMappers.put(SIMPLE.name(), new SimpleTaskMapper(parametersUtils, metadataDAO));
         taskMappers.put(
                 SUB_WORKFLOW.name(),
                 new SubWorkflowTaskMapper(parametersUtils, metadataDAO, new ConductorProperties()));

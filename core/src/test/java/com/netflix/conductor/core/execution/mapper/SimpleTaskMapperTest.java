@@ -23,23 +23,27 @@ import com.netflix.conductor.common.metadata.workflow.WorkflowDef;
 import com.netflix.conductor.common.metadata.workflow.WorkflowTask;
 import com.netflix.conductor.core.utils.IDGenerator;
 import com.netflix.conductor.core.utils.ParametersUtils;
+import com.netflix.conductor.dao.MetadataDAO;
 import com.netflix.conductor.model.TaskModel;
 import com.netflix.conductor.model.WorkflowModel;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 public class SimpleTaskMapperTest {
 
     private SimpleTaskMapper simpleTaskMapper;
+    private MetadataDAO metadataDAO;
 
     private IDGenerator idGenerator = new IDGenerator();
 
     @Before
     public void setUp() {
         ParametersUtils parametersUtils = mock(ParametersUtils.class);
-        simpleTaskMapper = new SimpleTaskMapper(parametersUtils);
+        metadataDAO = mock(MetadataDAO.class);
+        simpleTaskMapper = new SimpleTaskMapper(parametersUtils, metadataDAO);
     }
 
     @Test
@@ -103,5 +107,39 @@ public class SimpleTaskMapperTest {
         assertNotNull(mappedTasks);
         assertEquals(1, mappedTasks.size());
         assertEquals(TaskModel.Status.SCHEDULED, mappedTasks.get(0).getStatus());
+    }
+
+    @Test
+    public void scheduledTaskTypeDerivesFromBaseTypeAndDefIsFetchedFromMetadata() {
+        // Workflow task with no inline definition; the metadata store returns a def whose baseType
+        // overrides the task type used for the scheduled task.
+        WorkflowTask workflowTask = new WorkflowTask();
+        workflowTask.setName("my_user_defined_task");
+
+        TaskDef metadataDef = new TaskDef("my_user_defined_task");
+        metadataDef.setBaseType("HTTP");
+        when(metadataDAO.getTaskDef("my_user_defined_task")).thenReturn(metadataDef);
+
+        WorkflowModel workflow = new WorkflowModel();
+        workflow.setWorkflowDefinition(new WorkflowDef());
+
+        TaskMapperContext taskMapperContext =
+                TaskMapperContext.newBuilder()
+                        .withWorkflowModel(workflow)
+                        .withTaskDefinition(new TaskDef())
+                        .withWorkflowTask(workflowTask)
+                        .withTaskInput(new HashMap<>())
+                        .withRetryCount(0)
+                        .withRetryTaskId(idGenerator.generate())
+                        .withTaskId(idGenerator.generate())
+                        .build();
+
+        List<TaskModel> mappedTasks = simpleTaskMapper.getMappedTasks(taskMapperContext);
+
+        assertEquals(1, mappedTasks.size());
+        // baseType wins over the task name for the scheduled task type
+        assertEquals("HTTP", mappedTasks.get(0).getTaskType());
+        // the resolved definition is cached back on the workflow task
+        assertEquals(metadataDef, workflowTask.getTaskDefinition());
     }
 }

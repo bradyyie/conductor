@@ -14,8 +14,8 @@ package com.netflix.conductor.core.execution.mapper;
 
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 
+import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -25,6 +25,7 @@ import com.netflix.conductor.common.metadata.tasks.TaskType;
 import com.netflix.conductor.common.metadata.workflow.WorkflowDef;
 import com.netflix.conductor.common.metadata.workflow.WorkflowTask;
 import com.netflix.conductor.core.utils.ParametersUtils;
+import com.netflix.conductor.dao.MetadataDAO;
 import com.netflix.conductor.model.TaskModel;
 import com.netflix.conductor.model.WorkflowModel;
 
@@ -38,9 +39,11 @@ public class SimpleTaskMapper implements TaskMapper {
 
     public static final Logger LOGGER = LoggerFactory.getLogger(SimpleTaskMapper.class);
     private final ParametersUtils parametersUtils;
+    private final MetadataDAO metadataDAO;
 
-    public SimpleTaskMapper(ParametersUtils parametersUtils) {
+    public SimpleTaskMapper(ParametersUtils parametersUtils, MetadataDAO metadataDAO) {
         this.parametersUtils = parametersUtils;
+        this.metadataDAO = metadataDAO;
     }
 
     @Override
@@ -66,15 +69,28 @@ public class SimpleTaskMapper implements TaskMapper {
         int retryCount = taskMapperContext.getRetryCount();
         String retriedTaskId = taskMapperContext.getRetryTaskId();
 
-        TaskDef taskDefinition =
-                Optional.ofNullable(workflowTask.getTaskDefinition())
-                        .orElseGet(
-                                () -> {
-                                    LOGGER.warn(
-                                            "Task {} does not have a definition, using defaults",
-                                            workflowTask.getName());
-                                    return new TaskDef();
-                                });
+        // Resolve the task definition: prefer the one already on the workflow task; otherwise look
+        // it up from the metadata store; otherwise fall back to a default keyed by the task name
+        // (backported from Orkes). Cache it back on the workflow task for downstream use.
+        TaskDef taskDefinition = workflowTask.getTaskDefinition();
+        if (taskDefinition == null) {
+            taskDefinition = metadataDAO.getTaskDef(workflowTask.getName());
+            if (taskDefinition == null) {
+                LOGGER.warn(
+                        "Task {} does not have a definition, using defaults",
+                        workflowTask.getName());
+                taskDefinition = new TaskDef(workflowTask.getName());
+            }
+            workflowTask.setTaskDefinition(taskDefinition);
+        }
+
+        // A task definition may declare a base type, in which case the scheduled task takes the
+        // base type rather than the task name (backported from Orkes; supports user-defined task
+        // types backed by a base type).
+        String taskType = workflowTask.getName();
+        if (StringUtils.isNotBlank(taskDefinition.getBaseType())) {
+            taskType = taskDefinition.getBaseType();
+        }
 
         Map<String, Object> input =
                 parametersUtils.getTaskInput(
@@ -83,7 +99,7 @@ public class SimpleTaskMapper implements TaskMapper {
                         taskDefinition,
                         taskMapperContext.getTaskId());
         TaskModel simpleTask = taskMapperContext.createTaskModel();
-        simpleTask.setTaskType(workflowTask.getName());
+        simpleTask.setTaskType(taskType);
         simpleTask.setStartDelayInSeconds(workflowTask.getStartDelay());
         simpleTask.setInputData(input);
         simpleTask.setStatus(TaskModel.Status.SCHEDULED);

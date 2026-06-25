@@ -171,7 +171,7 @@ public class TestDeciderOutcomes {
                         systemTaskRegistry));
         taskMappers.put(
                 USER_DEFINED.name(), new UserDefinedTaskMapper(parametersUtils, metadataDAO));
-        taskMappers.put(SIMPLE.name(), new SimpleTaskMapper(parametersUtils));
+        taskMappers.put(SIMPLE.name(), new SimpleTaskMapper(parametersUtils, metadataDAO));
         taskMappers.put(
                 SUB_WORKFLOW.name(),
                 new SubWorkflowTaskMapper(parametersUtils, metadataDAO, new ConductorProperties()));
