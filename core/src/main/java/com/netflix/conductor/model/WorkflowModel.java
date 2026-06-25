@@ -112,6 +112,16 @@ public class WorkflowModel {
     // inherit the parent's idempotency key when they declare a strategy but no key of their own).
     private String idempotencyKey;
 
+    private String rateLimitKey;
+
+    private boolean rateLimited;
+
+    // Generic, feature-agnostic bag of system-level metadata an add-on may stamp on a workflow.
+    private Map<String, Object> systemMetadata = new HashMap<>();
+
+    // Prior executions of this workflow (e.g. retained across retries/reruns).
+    private List<WorkflowModel> history = new LinkedList<>();
+
     @JsonIgnore private Map<String, Object> input = new HashMap<>();
 
     @JsonIgnore private Map<String, Object> output = new HashMap<>();
@@ -328,6 +338,38 @@ public class WorkflowModel {
 
     public void setIdempotencyKey(String idempotencyKey) {
         this.idempotencyKey = idempotencyKey;
+    }
+
+    public String getRateLimitKey() {
+        return rateLimitKey;
+    }
+
+    public void setRateLimitKey(String rateLimitKey) {
+        this.rateLimitKey = rateLimitKey;
+    }
+
+    public boolean isRateLimited() {
+        return rateLimited;
+    }
+
+    public void setRateLimited(boolean rateLimited) {
+        this.rateLimited = rateLimited;
+    }
+
+    public Map<String, Object> getSystemMetadata() {
+        return systemMetadata;
+    }
+
+    public void setSystemMetadata(Map<String, Object> systemMetadata) {
+        this.systemMetadata = systemMetadata;
+    }
+
+    public List<WorkflowModel> getHistory() {
+        return history;
+    }
+
+    public void setHistory(List<WorkflowModel> history) {
+        this.history = history;
     }
 
     public String getExternalInputPayloadStoragePath() {
