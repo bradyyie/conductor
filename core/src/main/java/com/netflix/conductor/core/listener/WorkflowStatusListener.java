@@ -37,6 +37,12 @@ public interface WorkflowStatusListener {
         }
     }
 
+    default void onWorkflowCreatedIfEnabled(WorkflowModel workflow) {
+        if (workflow.getWorkflowDefinition().isWorkflowStatusListenerEnabled()) {
+            onWorkflowCreated(workflow);
+        }
+    }
+
     default void onWorkflowCompletedIfEnabled(WorkflowModel workflow) {
         if (workflow.getWorkflowDefinition().isWorkflowStatusListenerEnabled()) {
             onWorkflowCompleted(workflow);
@@ -90,6 +96,8 @@ public interface WorkflowStatusListener {
             onWorkflowResumed(workflow);
         }
     }
+
+    default void onWorkflowCreated(WorkflowModel workflow) {}
 
     void onWorkflowCompleted(WorkflowModel workflow);
 

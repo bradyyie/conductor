@@ -12,6 +12,8 @@
  */
 package com.netflix.conductor.core.listener;
 
+import java.util.List;
+
 import com.netflix.conductor.common.metadata.tasks.TaskDef;
 import com.netflix.conductor.model.TaskModel;
 
@@ -74,6 +76,8 @@ public interface TaskStatusListener {
             onTaskSkipped(task);
         }
     }
+
+    default void onTasksCreated(List<TaskModel> tasks) {}
 
     default void onTaskScheduled(TaskModel task) {}
 
