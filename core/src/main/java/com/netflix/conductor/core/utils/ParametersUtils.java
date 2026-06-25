@@ -358,4 +358,12 @@ public class ParametersUtils {
             return Long.compare(startIndex, o.startIndex);
         }
     }
+
+    /**
+     * Extension seam for secret substitution. The OSS default returns the map unchanged; an add-on
+     * (e.g. an enterprise edition) may override the bean to resolve secret references.
+     */
+    public Map<String, Object> substituteSecret(Map<String, Object> tokenMap) {
+        return tokenMap;
+    }
 }

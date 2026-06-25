@@ -1608,7 +1608,8 @@ public class WorkflowExecutorOps implements WorkflowExecutor {
         return executionDAOFacade.getWorkflowModel(workflowId, includeTasks);
     }
 
-    private void addTaskToQueue(TaskModel task) {
+    @Override
+    public void addTaskToQueue(TaskModel task) {
         // put in queue
         String taskQueueName = QueueUtils.getQueueName(task);
         if (task.getCallbackAfterMs() > 0) {

@@ -122,6 +122,17 @@ public abstract class WorkflowSystemTask {
         return true;
     }
 
+    /** The identity (hostname) of the server evaluating this task. */
+    protected String getIdentity() {
+        String serverId;
+        try {
+            serverId = java.net.InetAddress.getLocalHost().getHostName();
+        } catch (java.net.UnknownHostException e) {
+            serverId = System.getenv("HOSTNAME");
+        }
+        return serverId;
+    }
+
     /**
      * Whether this task should take precedence over another system task registered for the same
      * {@link #getTaskType()}. This is the seam that lets an add-on module (e.g. an enterprise

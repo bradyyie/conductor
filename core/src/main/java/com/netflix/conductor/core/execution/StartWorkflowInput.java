@@ -18,6 +18,7 @@ import java.util.Objects;
 import com.netflix.conductor.common.metadata.workflow.IdempotencyStrategy;
 import com.netflix.conductor.common.metadata.workflow.StartWorkflowRequest;
 import com.netflix.conductor.common.metadata.workflow.WorkflowDef;
+import com.netflix.conductor.model.WorkflowConsistency;
 
 public class StartWorkflowInput {
 
@@ -36,6 +37,7 @@ public class StartWorkflowInput {
     private String triggeringWorkflowId;
     private String idempotencyKey;
     private IdempotencyStrategy idempotencyStrategy;
+    private WorkflowConsistency workflowConsistency = WorkflowConsistency.DURABLE;
 
     public StartWorkflowInput() {}
 
@@ -169,6 +171,14 @@ public class StartWorkflowInput {
 
     public void setIdempotencyStrategy(IdempotencyStrategy idempotencyStrategy) {
         this.idempotencyStrategy = idempotencyStrategy;
+    }
+
+    public WorkflowConsistency getWorkflowConsistency() {
+        return workflowConsistency;
+    }
+
+    public void setWorkflowConsistency(WorkflowConsistency workflowConsistency) {
+        this.workflowConsistency = workflowConsistency;
     }
 
     @Override

@@ -213,4 +213,88 @@ public interface ExecutionDAO {
      * @param eventExecution Event execution to be removed
      */
     void removeEventExecution(EventExecution eventExecution);
+
+    // ---------------------------------------------------------------------------------------------
+    // Engine extensions (backported from Orkes). Event-task support and data-persistence modes.
+    // The data-store methods default to UnsupportedOperationException so a store opts in only if it
+    // supports them; the helpers are pure functions over OSS types.
+    // ---------------------------------------------------------------------------------------------
+
+    enum ActiveDataPersistenceMode {
+        // Only store sampled data (e.g. errors / algorithmic sampling) — useful for very high RPS.
+        SAMPLED,
+        // Running workflows & tasks stored only in the primary store and indexed (default mode).
+        PRIMARY_ONLY,
+        // Stored in a low-latency backend (e.g. Redis) and asynchronously written to the primary DB.
+        WRITE_BEHIND
+    }
+
+    enum EventType {
+        onScheduled,
+        onStart,
+        onFailed,
+        onSuccess,
+        onCancelled;
+
+        public static EventType fromTaskStatus(TaskModel.Status status) {
+            switch (status) {
+                case COMPLETED:
+                    return onSuccess;
+                case CANCELED:
+                    return onCancelled;
+                case FAILED:
+                case FAILED_WITH_TERMINAL_ERROR:
+                case TIMED_OUT:
+                    return onFailed;
+                case SCHEDULED:
+                    return onScheduled;
+                default:
+                    return null;
+            }
+        }
+    }
+
+    default EventType getEventType(TaskModel task) {
+        switch (task.getStatus()) {
+            case COMPLETED:
+                return EventType.onSuccess;
+            case CANCELED:
+                return EventType.onCancelled;
+            case FAILED:
+            case FAILED_WITH_TERMINAL_ERROR:
+            case TIMED_OUT:
+                return EventType.onFailed;
+            case IN_PROGRESS:
+                return EventType.onStart;
+            case SCHEDULED:
+                return EventType.onScheduled;
+            default:
+                return null;
+        }
+    }
+
+    default String getDomainForEventTask(String domainString) {
+        if (domainString != null && !domainString.isBlank()) {
+            String[] domains = domainString.split(",");
+            String last = domains[domains.length - 1].trim();
+            return last.equalsIgnoreCase("NO_DOMAIN") ? null : last;
+        }
+        return null;
+    }
+
+    default boolean addEventTask(TaskModel taskModel) {
+        throw new UnsupportedOperationException();
+    }
+
+    default boolean removeEventTask(TaskModel task) {
+        throw new UnsupportedOperationException();
+    }
+
+    default List<TaskModel> getEventTasks(String workflowId) {
+        throw new UnsupportedOperationException();
+    }
+
+    default void restoreWorkflow(WorkflowModel workflowModel) {
+        throw new UnsupportedOperationException();
+    }
 }

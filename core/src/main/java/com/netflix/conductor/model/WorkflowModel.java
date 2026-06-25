@@ -122,6 +122,8 @@ public class WorkflowModel {
     // Prior executions of this workflow (e.g. retained across retries/reruns).
     private List<WorkflowModel> history = new LinkedList<>();
 
+    private WorkflowConsistency workflowConsistency = WorkflowConsistency.DURABLE;
+
     @JsonIgnore private Map<String, Object> input = new HashMap<>();
 
     @JsonIgnore private Map<String, Object> output = new HashMap<>();
@@ -370,6 +372,14 @@ public class WorkflowModel {
 
     public void setHistory(List<WorkflowModel> history) {
         this.history = history;
+    }
+
+    public WorkflowConsistency getWorkflowConsistency() {
+        return workflowConsistency;
+    }
+
+    public void setWorkflowConsistency(WorkflowConsistency workflowConsistency) {
+        this.workflowConsistency = workflowConsistency;
     }
 
     public String getExternalInputPayloadStoragePath() {

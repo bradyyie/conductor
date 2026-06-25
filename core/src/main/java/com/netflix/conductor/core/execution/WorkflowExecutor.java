@@ -160,6 +160,8 @@ public interface WorkflowExecutor {
      */
     void scheduleNextIteration(TaskModel task, WorkflowModel workflow);
 
+    void addTaskToQueue(TaskModel taskModel);
+
     /**
      * @param input Starts a new workflow execution
      * @return id of the workflow
