@@ -1,0 +1,550 @@
+# Orkes ↔ Conductor OSS Convergence Plan
+
+> Branch (both repos): **`orkes-converge-fork-conductor`**
+> OSS repo: `~/workprojects/conductor` (`github.com/conductor-oss/conductor`, base `origin/main` @ `a3b9feec3`)
+> Enterprise repo: `~/workprojects/orkes-conductor` (`github.com/orkes-io/orkes-conductor`, base `main`)
+> Status: **DRAFT for review** — no production code changed yet. This document is the authoritative guideline.
+
+---
+
+## 0. How to read this document
+
+This is the master plan. It is intentionally exhaustive ("down to the contracts") because the work is mission‑critical and will be executed incrementally by multiple people over many PRs. Sections:
+
+1. Executive summary
+2. Goals & non‑negotiable principles
+3. Repos, branches, and the open‑core model
+4. Target architecture (open‑core + hexagonal)
+5. The reference pattern (OSS scheduler) — the recipe we copy everywhere
+6. **The contracts** — existing ports/SPIs we reuse + new seams we add (with Java signatures)
+7. Engine backport plan (Orkes → OSS native), task‑by‑task disposition
+8. Persistence convergence + `org_id` strategy (extension by inheritance)
+9. Database migrations strategy
+10. Module map (OSS vs Enterprise) + namespacing rules
+11. Phased execution plan (the actual steps, with commands & acceptance criteria)
+12. Build, publish (maven local), and composite consumption
+13. Testing & verification
+14. Risks & open decisions
+15. Appendix: authoritative file‑path index
+
+Terminology: **OSS** = `conductor-oss/conductor` (Apache‑2.0, public, `com.netflix.conductor.*` / `org.conductoross.conductor.*`). **Enterprise** = `orkes-io/orkes-conductor` (private, `io.orkes.conductor.*`). **Port** = an interface owned by a domain module. **Adapter** = a concrete implementation of a port in a technology module. **Seam** = a generic, feature‑agnostic extension point exposed by OSS.
+
+---
+
+## 1. Executive summary
+
+The Orkes fork diverged from Conductor OSS by (a) re‑implementing the engine inside a private `oss-core` module, (b) collapsing OSS's clean per‑concern adapter modules into technology **monoliths** (`postgres-persistence` does execution + queue + metadata + scheduler + human + webhook + integration + gateway + RBAC + org), and (c) weaving multi‑tenancy (`org_id`), RBAC, SKU limits, and an introspection tracer through the engine.
+
+Meanwhile **OSS already implements the architecture we want**: ports in `core`, adapters in technology modules, the `scheduler/core` + `scheduler/{db}-persistence` ports‑and‑adapters split, Spring‑Boot `AutoConfiguration.imports` plugin discovery, and feature‑agnostic SPIs (`WorkflowStatusListener`, `TaskStatusListener`, `Lock`, `ExternalPayloadStorage`, `EventQueueProvider`).
+
+**The convergence is bi‑directional:**
+
+- **Backport (Orkes → OSS):** the Orkes engine improvements (`OrkesJoin`, `OrkesDoWhile`, `OrkesExclusiveJoin`, `OrkesSubWorkflowTaskMapper`, `OrkesForkJoinDynamicTaskMapper`, the parallel scheduling in `OrkesForkJoinTaskMapper`, and the engine core of `OrkesWorkflowExecutor`) are cleaned of `org_id`/RBAC/limits/introspection and become the **native OSS implementations**.
+- **Plug (Enterprise → on top of OSS):** enterprise behavior (`org_id`, RBAC, SKU limits, CDC, secrets, integrations, webhooks, human, api‑gateway, archival) is re‑introduced as **subclasses that call `super()`** and via **generic OSS seams** + Spring conditions/auto‑config — never inside OSS.
+
+**End state:**
+
+- OSS gains the Orkes engine improvements as native code (Apache‑2.0).
+- Orkes **deletes `oss-core`** and consumes published `org.conductoross:conductor-*` artifacts.
+- Orkes keeps only enterprise modules, which layer onto OSS via `super()`/seams/auto‑config.
+- Two repos; OSS publishes artifacts (maven local for dev, GitHub Packages/S3 for CI); Orkes is a **composite** of OSS artifacts + private modules.
+
+---
+
+## 2. Goals & non‑negotiable principles
+
+**P1 — Dependencies point inward.** Everything may depend on `core`/`common` and `*-api` port modules. **No implementation module depends on another implementation module.** Forbidden today and must be removed: `postgres-persistence → scheduler-*`, `postgres-persistence → api-gateway/integration/human/api-orchestration`, `redis-persistence → api-gateway`.
+
+**P2 — OSS is feature‑agnostic.** OSS contains **no** knowledge of organizations, tenants, multi‑tenancy, authentication, or authorization. OSS exposes **generic** seams (e.g. `applyQueryExtensions(builder, request)`); the enterprise layer decides *why* the seam exists. We do **not** add `@OrgScoped`, `OrgScope`, `OrgContext`, or `org_id` anywhere in OSS.
+
+**P3 — Extension by inheritance + composition.** Enterprise extends OSS concrete classes and calls `super()` first, then adds behavior. OSS classes are therefore designed for extension (non‑final, `protected` hooks, beans overridable via `@ConditionalOnMissingBean`/`@Primary`).
+
+**P4 — Namespacing.** Anything we create or change **on the OSS side as new Orkes‑originated code** uses `org.conductoross.conductor.*`. Pre‑existing Netflix code stays `com.netflix.conductor.*` even when we enhance it in place. Enterprise code stays `io.orkes.conductor.*`.
+
+**P5 — Backport beats override.** If an Orkes class is a pure engine improvement, backport it into the OSS native class and **delete the Orkes override**. Keep an enterprise subclass only when genuinely enterprise behavior remains. This shrinks the override/`excludeFilters` surface over time.
+
+**P6 — One‑way, pluggable, auto‑discovered.** New backends are added by dropping a jar that implements a port and ships an `AutoConfiguration.imports`; no engine code changes. Selection is by property (`conductor.db.type`, feature flags) and/or classpath.
+
+**P7 — Every port has a contract test.** Use `java-test-fixtures` to publish an abstract contract test per port (the OSS scheduler already does this); each adapter subclasses it.
+
+---
+
+## 3. Repos, branches, and the open‑core model
+
+### 3.1 Branches (created)
+
+| Repo | Path | Branch | Base |
+|---|---|---|---|
+| OSS | `~/workprojects/conductor` | `orkes-converge-fork-conductor` | `origin/main` @ `a3b9feec3` (clean upstream) |
+| Enterprise | `~/workprojects/orkes-conductor` | `orkes-converge-fork-conductor` | `main` |
+
+### 3.2 Distribution model — two repos + published artifacts
+
+- OSS builds and publishes `org.conductoross:conductor-*` jars.
+  - **Dev loop:** `./gradlew publishToMavenLocal` in the OSS repo; Orkes consumes via `mavenLocal()` (already present in `orkes-conductor/build.gradle` repositories).
+  - **CI/release:** GitHub Packages (`maven.pkg.github.com/orkes-io/*`, already configured) and/or S3 (`s3://orkes-artifacts-repo`, already used by `api-orchestration`/`server`/`workers`).
+- Enterprise consumes the OSS artifacts as normal dependencies and adds private modules → branded composite server.
+- Today Orkes **excludes** `org.conductoross:conductor-core` and re‑implements it (`oss-core`). Convergence **reverses** this: stop excluding, delete `oss-core`, depend on the published artifact.
+
+---
+
+## 4. Target architecture (open‑core + hexagonal)
+
+### 4.1 Layering
+
+```
+OSS (org.conductoross / com.netflix) — published artifacts
+  conductor-common         models, events, exceptions, ExternalPayloadStorage SPI
+  conductor-core           engine + PORTS (ExecutionDAO, MetadataDAO, QueueDAO, ...) +
+                           SPIs (listeners, Lock, EventQueueProvider) + WorkflowExecutor(Ops) +
+                           system tasks/mappers (native, with backported Orkes improvements) +
+                           IDGenerator + NEW generic seams (QueryBuilder, applyQueryExtensions)
+  conductor-<db>-persistence   adapters: ExecutionDAO/MetadataDAO/QueueDAO/PollDataDAO impls
+  conductor-scheduler-core + conductor-scheduler-<db>-persistence   (reference pattern)
+  conductor-http-task, conductor-json-jq-task, *-storage, *-event-queue, listeners
+  conductor-server, conductor-server-lite
+
+ENTERPRISE (io.orkes.conductor) — private, depends on OSS artifacts
+  enterprise-common        OrgContext, IDTools (org-encoding), audit, FeatureFlags
+  enterprise-security      RBAC, auth providers, SCIM, federation, @PreAuthorize REST
+  enterprise-persistence-<db>   subclasses of OSS adapters: override applyQueryExtensions → org_id;
+                                 plus enterprise stores (rbac/webhook/human/integration/gateway/org/archive)
+  enterprise-engine        OrkesWorkflowExecutor extends WorkflowExecutorOps (org_id/RBAC/limits/CDC),
+                           enterprise task subclasses where enterprise behavior remains
+  webhooks, human, integration, event-processor, event-integration,
+  api-gateway, api-orchestration, archive-persistence, ssm-properties, workers (external)
+  scheduler-enterprise     extends conductor-scheduler-core
+  server-enterprise        composite assembly + branding
+```
+
+### 4.2 Dependency rules (enforced — see §11 Phase 0)
+
+- Allowed: `adapter → *-api → core → common`; `domain → core + *-api`; `server → anything`.
+- Forbidden: adapter → adapter; adapter → domain; anything → server; sideways technology edges.
+- Enforcement: ArchUnit tests + a Gradle dependency‑rule check that fails on illegal `project(':...')` edges. Baseline current violations and burn down per phase.
+
+### 4.3 Namespacing rules (P4 restated with examples)
+
+| Situation | Namespace |
+|---|---|
+| Enhance existing OSS `Join` in place (backport) | stays `com.netflix.conductor.core.execution.tasks.Join` |
+| New OSS SPI/seam we introduce (e.g. `SqlQueryBuilder`, `MetadataChangeListener`) | `org.conductoross.conductor.*` |
+| New OSS adapter we contribute (e.g. a new store) | `org.conductoross.conductor.*` |
+| Enterprise subclass / enterprise‑only module | `io.orkes.conductor.*` |
+
+> Pre‑existing exception in OSS: the scheduler ports use `io.orkes.conductor.dao.scheduler.*` (already merged upstream, Apache‑licensed). Leave as‑is; do **not** retrofit. New ports follow `org.conductoross.conductor.*`.
+
+### 4.4 The org_id rule (critical)
+
+OSS never sees `org_id`. The enterprise edition injects it by **overriding generic seams**. When the enterprise edition runs single‑tenant, its `OrgContext` returns the default (`"0000"`); OSS code paths never ask for it. The previously discussed "OSS returns 0000" is therefore implemented as an **enterprise single‑tenant default**, not an OSS concept.
+
+---
+
+## 5. The reference pattern (OSS scheduler) — copy this everywhere
+
+This is verified, working OSS code. Every domain we converge follows it.
+
+**Module split:** `feature/core` (ports + domain + service + REST + wiring) and one `feature/<db>-persistence` per backend.
+
+**Step 1 — Port(s) in `-core`** (plain interfaces over domain models; no Spring/JDBC):
+`scheduler/core/src/main/java/io/orkes/conductor/dao/scheduler/SchedulerDAO.java`, `SchedulerCacheDAO.java`, `scheduler/core/.../dao/archive/SchedulerArchivalDAO.java`.
+
+**Step 2 — Business logic in `-core`** depends on the port, not adapters (`SchedulerService` takes `SchedulerDAO`/`SchedulerArchivalDAO` via constructor). `-core` keeps Spring Boot `compileOnly` and lists **no** persistence adapter.
+
+**Step 3 — Core wiring + feature flag.** `-core` ships `SchedulerOssConfiguration` registered via `…/META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports`. It **consumes** the DAO beans (does not declare them), supplies safe defaults via `@ConditionalOnMissingBean` (`NoOpSchedulerCacheDAO`) and an optional `@Primary` decorator (`CachingSchedulerDAO`). Gated by `@Conditional(SchedulerConditions)` → `conductor.scheduler.enabled=true`.
+
+**Step 4 — Adapter in `-<db>-persistence`:** `PostgresSchedulerDAO extends PostgresBaseDAO implements SchedulerDAO`. Depends on `:conductor-scheduler-core` + `:conductor-common` + `:conductor-core` + the per‑DB main module (`:conductor-postgres-persistence`) + driver + DB‑specific Flyway. **No other adapter.**
+
+**Step 5 — Adapter wiring:** `PostgresSchedulerConfiguration` is `@AutoConfiguration`, listed in the adapter's own `AutoConfiguration.imports`, gated by
+`@ConditionalOnExpression("'${conductor.db.type:}' == 'postgres' && '${conductor.scheduler.enabled:false}' == 'true'")`,
+and declares `@Bean SchedulerDAO` / `@Bean SchedulerArchivalDAO`.
+
+**Step 6 — Shared DataSource, isolated migrations:** inject the shared `DataSource` + `@Qualifier("postgresRetryTemplate")` from the per‑DB main module; add only a private `Flyway` with its own history table (`flyway_schema_history_scheduler`) and location (`classpath:db/migration_scheduler`); make DAO beans `@DependsOn` it.
+
+**Step 7 — Runtime selection = two properties:** `conductor.db.type=<postgres|mysql|…>` + `conductor.<feature>.enabled=true`. Exactly one adapter's condition is true → exactly one set of port beans exists.
+
+**Step 8 — Discovery:** `Conductor.java` component‑scans `com.netflix.conductor`, `io.orkes.conductor`, `org.conductoross.conductor`; `@AutoConfiguration` classes come in via the imports files.
+
+**Step 9 — Contract tests:** `-core` uses `java-test-fixtures` to export `AbstractSchedulerDAOTest` etc.; each adapter adds `testImplementation testFixtures(project(':conductor-scheduler-core'))` and writes a thin subclass.
+
+> Correction to common assumption: `common-persistence` in OSS is an (almost empty) **test** module, not the DataSource provider. The shared `DataSource`/Flyway/base‑DAO live in each per‑DB main module (`postgres-persistence`, `mysql-persistence`, …), which `@Import(DataSourceAutoConfiguration.class)` gated by `conductor.db.type`.
+
+---
+
+## 6. The contracts
+
+### 6.1 Existing OSS ports we REUSE (do not reinvent)
+
+Package `com.netflix.conductor.dao` in `conductor-core` unless noted. These are the persistence ports the enterprise adapters implement/subclass.
+
+- **`ExecutionDAO`** — `core/src/main/java/com/netflix/conductor/dao/ExecutionDAO.java`
+  tasks CRUD (`createTasks`, `updateTask`, `getTask(s)`, `getPendingTasksByWorkflow`, `getPendingTasksForTaskType`, `getTasksForWorkflow`), workflow CRUD (`createWorkflow`, `updateWorkflow`, `removeWorkflow`, `removeWorkflowWithExpiry`, `getWorkflow(s)`, `getRunningWorkflowIds`, `getPendingWorkflowsByType`, counts), and events (`addEventExecution`, `updateEventExecution`, `removeEventExecution`).
+- **`MetadataDAO`** — task/workflow def CRUD; `getLatestWorkflowDef`, `getWorkflowDef(name,version)`, `getAllWorkflowDefsLatestVersions`, default `getWorkflowNames`/`getWorkflowVersions`.
+- **`QueueDAO`** — `push`/`pushIfNotExists`/`pop`/`pollMessages`/`ack`/`remove`/`flush`/`queuesDetail(Verbose)`/`processUnacks`/`postpone`/`peekFirstIds`.
+- **`PollDataDAO`** — `updateLastPollData`, `getPollData(...)`, default `getAllPollData`.
+- **`RateLimitingDAO`** — `exceedsRateLimitPerFrequency(TaskModel, TaskDef)`.
+- **`ConcurrentExecutionLimitDAO`** — `addTaskToLimit`/`removeTaskFromLimit`/`exceedsLimit`.
+- **`IndexDAO`** — sync+async indexing/search of workflows, tasks, logs, events, messages.
+- **`EventHandlerDAO`** — `add/update/removeEventHandler`, `getAllEventHandlers`, `getEventHandlersForEvent`.
+- **`WorkflowMessageQueueDAO`** (WMQ, optional; injected as `Optional<>`).
+- **`FileMetadataDAO`** — `org.conductoross.conductor.dao.FileMetadataDAO` (file‑storage feature).
+- **DAL facade `ExecutionDAOFacade`** — `core/src/main/java/com/netflix/conductor/core/dal/ExecutionDAOFacade.java` (`@Component`). The engine talks to this, not to DAOs directly. Constructor: `(ExecutionDAO, QueueDAO, IndexDAO, RateLimitingDAO, ConcurrentExecutionLimitDAO, PollDataDAO, ObjectMapper, ConductorProperties, ExternalPayloadStorageUtils)`.
+
+### 6.2 Existing OSS extension SPIs we REUSE
+
+| SPI | Path / package | Default (no‑op) | Gate |
+|---|---|---|---|
+| `WorkflowStatusListener` | `core/.../core/listener/` (`com.netflix.conductor.core.listener`) | `WorkflowStatusListenerStub` | `conductor.workflow-status-listener.type=stub` (matchIfMissing) |
+| `TaskStatusListener` | `core/.../core/listener/` | `TaskStatusListenerStub` | `conductor.task-status-listener.type=stub` |
+| `MetadataChangeListener` | `core/.../org/conductoross/conductor/core/listener/` | `MetadataChangeListenerStub` | `conductor.metadata-change-listener.type=stub` |
+| `ExternalPayloadStorage` | `common/.../common/utils/` | `DummyPayloadStorage` | `conductor.external-payload-storage.type=dummy` |
+| `EventQueueProvider` | `core/.../core/events/` | (supplied by queue modules) | collected into `EventQueues` map |
+| `Lock` (+ `ExecutionLockService`) | `core/.../core/sync/` | `NoopLock` | `conductor.workflow-execution-lock.type=noop_lock` |
+| `IDGenerator` | `core/.../core/utils/IDGenerator.java` | UUID v4 + deterministic `generateSubWorkflowId` | `@ConditionalOnMissingBean(IDGenerator)` |
+
+**These are the templates for new seams: an interface in OSS + a stub default selected by `@ConditionalOnProperty(..., matchIfMissing=true)` or `@ConditionalOnMissingBean`.** Enterprise registers a real bean and wins.
+
+### 6.3 NEW generic seams we must ADD to OSS (with proposed contracts)
+
+All new seams are **feature‑agnostic** (P2) and `org.conductoross.conductor.*` (P4).
+
+#### 6.3.1 `SqlQueryBuilder` — composable SQL with **named** binds (enabler for org_id injection)
+
+Why: enterprise must append predicates/columns to native SQL without breaking positional binds, and the org_id sits in PRIMARY KEY / `ON CONFLICT` targets (not just `WHERE`). The current positional `Query` util cannot support safe sub‑class appends. Introduce a builder in OSS (used by the OSS `*-persistence` modules) so enterprise subclasses can decorate queries.
+
+Proposed package: `org.conductoross.conductor.persistence.query` in `conductor-core` (or a small `conductor-persistence-api` module).
+
+```java
+public interface SqlQueryBuilder {
+    SqlQueryBuilder select(String... columns);
+    SqlQueryBuilder from(String table);
+    SqlQueryBuilder where(String predicate);          // e.g. "workflow_id = :workflowId"
+    SqlQueryBuilder and(String predicate);            // appended safely; enterprise uses this
+    SqlQueryBuilder bind(String name, Object value);  // named bind; order-independent
+    SqlQueryBuilder orderBy(String... columns);
+    SqlQueryBuilder limit(int n);
+    String toSql();                                   // renders :name -> ? and records bind order
+    List<Object> binds();                             // resolved positional binds in render order
+}
+
+public interface SqlInsertBuilder {
+    SqlInsertBuilder into(String table);
+    SqlInsertBuilder column(String name, Object value);     // enterprise adds org_id here
+    SqlInsertBuilder onConflict(String... targetColumns);   // enterprise adds org_id to target
+    SqlInsertBuilder doUpdateSet(String... assignments);
+    String toSql();
+    List<Object> binds();
+}
+```
+
+#### 6.3.2 Query decoration hooks on OSS base DAO (generic, no‑op in OSS)
+
+Add to the OSS per‑DB base DAO (e.g. `PostgresBaseDAO`) or to each OSS store, **protected, no‑op**, named generically:
+
+```java
+// OSS — com.netflix.conductor.postgres.dao.PostgresBaseDAO (enhanced in place; stays com.netflix)
+/** Generic extension point. No-op in OSS. Subclasses may add predicates/binds. */
+protected void applyQueryExtensions(SqlQueryBuilder query, QueryContext context) { /* no-op */ }
+/** Generic extension point for writes. No-op in OSS. */
+protected void applyWriteExtensions(SqlInsertBuilder insert, QueryContext context) { /* no-op */ }
+```
+
+`QueryContext` is generic (carries table name, operation type READ/WRITE, and the originating request/entity) and contains **no** org/tenant vocabulary:
+
+```java
+// OSS — org.conductoross.conductor.persistence.query.QueryContext
+public record QueryContext(String table, Operation operation, Object request) {
+    public enum Operation { READ, WRITE }
+}
+```
+
+Enterprise overrides (private repo):
+
+```java
+// Enterprise — io.orkes.conductor.dao.postgres.OrkesPostgresExecutionDAO
+@Override
+protected void applyQueryExtensions(SqlQueryBuilder query, QueryContext ctx) {
+    super.applyQueryExtensions(query, ctx);
+    query.and("org_id = :orgId").bind("orgId", OrgContext.current().orgId());
+}
+@Override
+protected void applyWriteExtensions(SqlInsertBuilder insert, QueryContext ctx) {
+    super.applyWriteExtensions(insert, ctx);
+    insert.column("org_id", OrgContext.current().orgId());
+    insert.onConflict("org_id");   // composes with the OSS conflict target
+}
+```
+
+> Acceptance: with OSS migrations (no `org_id` column) and no enterprise override, every query runs unchanged. With enterprise migrations + override, `org_id` is appended uniformly. The OSS DAO calls `applyQueryExtensions(qb, ctx)` right before render in **every** read/write path, and all raw‑JDBC methods are migrated onto the builder so the hook is universal.
+
+#### 6.3.3 `IDGenerator` override (already a seam) — keep OSS plain; enterprise prepends org
+
+OSS keeps `com.netflix.conductor.core.utils.IDGenerator` (UUID v4 + deterministic `generateSubWorkflowId`). If we want time‑based IDs natively in OSS, add an **OSS** time‑based generator selected by property (`conductor.id.generator=time_based`) — with **no org prefix**:
+
+```java
+// OSS (new) — org.conductoross.conductor.core.utils.TimeBasedIDGenerator extends IDGenerator
+@Override public String generate() { return UuidUtil.getTimeBasedUuid().toString(); }
+```
+
+Enterprise keeps the org‑prefixing generator (`io.orkes.conductor.id.TimeBasedUUIDGenerator`) that prepends `orgId` when not default, and consolidate the 3 duplicate copies (dead `common/IDTools`, `core/TimeBasedUUIDGenerator`, `workers/TimeBasedUUIDGenerator`) into the enterprise module. `getOrgId(id)`/`getDate(id)` decoding stays enterprise.
+
+> Decision needed (see §14): does FIFO priority by creation time (`getWorkflowFIFOPriority` from `TimeBasedUUIDGenerator.getDate`) become native OSS behavior (engine decision) or stay enterprise? Recommended: backport a time‑based priority that derives from `IDGenerator`‑produced IDs *only if* the time‑based generator is active; otherwise priority defaults to 0 (OSS current behavior).
+
+#### 6.3.4 WorkflowExecutor extension points (for the enterprise executor subclass)
+
+`OrkesWorkflowExecutor` will become `WorkflowExecutorOps` (native) + an enterprise subclass `OrkesWorkflowExecutor extends WorkflowExecutorOps`. To let enterprise inject org/RBAC/limits cleanly, `WorkflowExecutorOps` must expose `protected` seams instead of inlined logic. Proposed (all no‑op/default in OSS):
+
+```java
+// OSS — com.netflix.conductor.core.execution.WorkflowExecutorOps (enhanced in place)
+protected void beforeStartWorkflow(StartWorkflowInput input) {}      // enterprise: RBAC check, SKU limits
+protected void afterWorkflowScheduled(WorkflowModel wf) {}            // enterprise: stamp metadata
+protected void beforeScheduleTasks(WorkflowModel wf, List<TaskModel> tasks) {} // enterprise: per-task RBAC, queue routing
+protected int resolveWorkflowPriority(String workflowId, int priority) { return priority; } // enterprise: FIFO-by-time
+protected void onDecideContext(String workflowId) {}                  // enterprise: set OrgContext from workflowId
+```
+
+Enterprise subclass overrides these, calling `super` where appropriate. This removes all `OrkesRequestContext`/RBAC/limits/introspection from the OSS executor while preserving behavior.
+
+#### 6.3.5 CDC / change events (enterprise) — OSS exposes listener seams only
+
+OSS already has `WorkflowStatusListener`/`TaskStatusListener`/`MetadataChangeListener`. The Orkes CDC publisher (`OrkesCDCEventPublisher`/`OrkesCDCEventSink`) stays enterprise and is wired by implementing those OSS listener SPIs (no new OSS interface needed). If CDC needs finer hooks than the listeners provide, add **generic** listener methods to the OSS SPIs (still feature‑agnostic).
+
+### 6.4 Enterprise‑only contracts (stay private, `io.orkes.conductor.*`)
+
+RBAC (`AccessControlServiceV2`, `OrkesPermissionEvaluator`, `RbacDAO`, …), `OrgContext`/multi‑tenancy, `SecretsDAO`, `WebhookDAO`, `IntegrationDAO` family, `GatewayConfigDAO`, `ServiceRegistryDAO`, archival (`ArchiveDAO`/`DocumentStoreDAO`/`ObjectStoreDAO`/`PartitionManager`), `EnterpriseSchedulerDAO`, `HumanTaskDAO`, `ConductorLimitsDAO`/OCU, audit. These have **no** OSS counterpart and never move to OSS.
+
+---
+
+## 7. Engine backport plan (Orkes → OSS native)
+
+The Orkes engine overrides live in `orkes-conductor/server/src/main/java/com/netflix/conductor/**` (61 classes) and supersede OSS via `@Primary` (executor/facade/services) or `@Component("<TASK_TYPE>")` + `excludeFilters` (system tasks/mappers).
+
+### 7.1 Disposition table
+
+Legend — **Enterprise concerns** = org_id / RBAC / multi‑tenant / SKU‑limits / audit / CDC. *Introspection* (`io.orkes.conductor.introspection.*`) and the Orkes *evaluator stack* (`OrkesJavascriptEvaluator`/`graaljs`/`ConsoleBridge`) are engine‑adjacent and noted separately.
+
+| Orkes class | OSS target | What to backport | Enterprise concerns? | Disposition |
+|---|---|---|---|---|
+| `OrkesExclusiveJoin` | `ExclusiveJoin` | default‑exclusive‑join fallback; full output on completion | No | **Backport as‑is** |
+| `OrkesForkJoinDynamicTaskMapper` | `ForkJoinDynamicTaskMapper` | already ~95% in OSS; port only `setParentTaskReferenceName` + type‑safe `getStringInput` | No | **Backport (2 small items)** |
+| `OrkesSubWorkflowTaskMapper` | `SubWorkflowTaskMapper` | runtime version resolution (`isResolveSubWorkflowVersionAtRuntime`), v0→null, idempotency‑key inheritance | No | **Backport (merge w/ OSS inline‑def + priority)** |
+| `OrkesJoin` | `Join` | script/JS join + console capture; large‑fork (>500) scaling w/ `captureOutput` | No (introspection + evaluator) | **Backport** (strip introspection; ship evaluator stack to OSS; keep OSS permissive/SYNC/backoff) |
+| `OrkesDoWhile` | `DoWhile` | pluggable condition evaluators + console capture; retry‑aware failure detection; task reload | No (introspection + evaluator) | **Backport** (strip introspection; OSS already has richer list‑iteration) |
+| `DeciderTask` | (none) | `Runnable` wrapper w/ id‑based equals/hashCode | No | **Backport as new OSS file** |
+| `OrkesForkJoinTaskMapper` | `ForkJoinTaskMapper` | **parallel** branch scheduling via ExecutorService | Yes (org_id ContextPropagation) | **Both:** backport parallel scheduling; org_id propagation → enterprise |
+| `OrkesSimpleTaskMapper` | `SimpleTaskMapper` | `taskDefinition.getBaseType()`; MetadataDAO fallback | Yes (`TaskMapperRBAC`) | **Both:** backport baseType/fallback; RBAC `validate()` → enterprise subclass |
+| `OrkesExecutionDAOFacade` | `ExecutionDAOFacade` | decider‑queue push on create w/ FIFO priority; rate‑limit notify; terminal timestamping | Partial (CDC, introspection) | **Both:** backport queue/rate‑limit; CDC behind listener SPI; strip introspection |
+| `OrkesWorkflowExecutor` | `WorkflowExecutorOps` | sync exec, idempotency strategies, sync subworkflow, rate‑limit‑aware scheduling, schema validation, parallel decide/start | **Yes** (org_id, RBAC/impersonation, SKU/OCU, per‑org metrics, introspection) | **Both:** backport engine core into `WorkflowExecutorOps` + add seams (§6.3.4); keep `OrkesWorkflowExecutor extends WorkflowExecutorOps` |
+| `OrkesInline/StartWorkflow/Terminate/SetVariable/JSONJQTransform/PublishMetric/TerminateWorkflow/SubWorkflowSync` | corresponding OSS tasks | misc engine tweaks | Mostly No (introspection) | **Backport** (strip introspection) |
+| `OrkesDoWhileTaskMapper/JoinTaskMapper/SwitchTaskMapper/DynamicTaskMapper/UserDefinedTaskMapper/WaitTaskMapper/GetWorkflowTaskMapper/YieldTaskMapper/TerminateWorkflowTaskMapper` | corresponding OSS mappers | engine mapper variants | No | **Backport** |
+| `OrkesExecutionService` | `ExecutionService` | poll‑timeout cap, batch poll | Yes (org_id→executionNamespace, auth) | **Keep enterprise subclass** (backport minor poll deltas) |
+| `OrkesMetadataService` | `MetadataServiceImpl` | — | Yes (RBAC, by‑org queries, createdBy) | **Keep enterprise subclass** |
+| `OrkesGetWorkflow/OrkesUpdateTask/OrkesUpdateSecret(+mapper)/OrkesQueryProcessorTaskMapper` | (new task types) | — | Yes (RBAC/secrets/audit) | **Keep enterprise** |
+| `OrkesCDCEventPublisher/Sink` | (impl of CDC ifaces) | — | Yes (org_id, introspection) | **Keep enterprise** (wire via OSS listener SPIs) |
+| `OrkesHuman`, `OrkesHumanTaskMapper` | `Human`, `HumanTaskMapper` | — | Human is enterprise | **Keep enterprise** (OSS retains base `Human`/no‑op) |
+| Integration mappers (`OrkesAWSLambda/BusinessRule/HTTPPoll/OpsGenie/Sendgrid/PublishMetric/UpdateTask`) | (new) | — | Enterprise connectors | **Keep enterprise** |
+| Redis/in‑memory caches (`*ExecutionCache`, interfaces) | (none) | interfaces + in‑memory (drop orgId param) | Yes (tenant‑keyed Redis) | **Both:** interfaces+in‑memory → OSS; tenant‑keyed Redis → enterprise |
+| Utilities (`EnvUtils`, `ExecutorUtils`, `NotificationResult`, `UniqueBlockingQueue`, `WorkflowRepairer`, `WorkflowTaskTypeConstraint`, …) | mixed | case‑by‑case | Mostly No | **Backport case‑by‑case** |
+
+### 7.2 Two cross‑cutting decisions before backporting
+
+1. **Introspection** (`io.orkes.conductor.introspection.*`) is the most pervasive non‑tenancy coupling (~50 call sites in the executor alone, plus Join/DoWhile/etc.). **Decision (recommended):** add a **no‑op OSS SPI** `org.conductoross.conductor.core.introspection.WorkflowIntrospection` with a stub default, so backported call sites compile and run in OSS with zero overhead; enterprise provides the real tracer. Alternative: strip call sites entirely (higher churn, loses the hook). → see §14.
+2. **`TimeBasedUUIDGenerator`** is dual‑purpose: `getOrgId()` (tenant — strip) and `getDate()`/FIFO‑priority (engine). Resolve §6.3.3 before stripping the executor.
+
+### 7.3 Bean‑override mechanics during/after backport
+
+- **System tasks/mappers:** OSS registers `@Component("<TASK_TYPE>")`; `SystemTaskRegistry(Set<WorkflowSystemTask>)` collates by type and **throws on duplicate keys**. Therefore, while both an OSS `Join` and an `OrkesJoin` exist, the Orkes app must keep the `excludeFilters` entry. **After** a class is fully backported and the Orkes override deleted, remove it from `excludeFilters` (P5 — the list shrinks toward empty). For tasks that remain enterprise‑only subclasses, keep the exclude (or, preferred, make the OSS bean `@ConditionalOnMissingBean` so the enterprise subclass wins without an exclude — apply where the OSS task can tolerate optional override).
+- **`@Primary` beans** (`WorkflowExecutorOps`/`ExecutionDAOFacade`/services): enterprise subclass annotated `@Primary` continues to win; no exclude needed.
+
+---
+
+## 8. Persistence convergence + `org_id` strategy
+
+### 8.1 From technology monoliths to OSS adapters + enterprise subclasses
+
+Today Orkes `postgres-persistence` (and mysql/redis) implement **both** OSS concerns and enterprise concerns and depend sideways on domain modules. Target:
+
+- **OSS** `conductor-postgres-persistence` (consumed as an artifact) provides the OSS adapters (`ExecutionDAO`, `MetadataDAO`, `QueueDAO`, `PollDataDAO`, optional `IndexDAO`/`Lock`/`FileMetadataDAO`) with the generic `applyQueryExtensions`/`applyWriteExtensions` seams.
+- **Enterprise** `enterprise-persistence-postgres` provides:
+  - subclasses of the OSS adapters that override the seams to add `org_id`;
+  - the enterprise stores that have **no** OSS counterpart (RBAC, webhook, human, integration, gateway, org‑config, archive, registry, audit, limits), each implementing its enterprise port.
+- The enterprise persistence module depends only on OSS persistence artifacts + enterprise ports — **not** on other technology modules.
+
+### 8.2 The org_id mechanism (extension by inheritance) — restated end‑to‑end
+
+1. OSS adapter builds the base query via `SqlQueryBuilder`/`SqlInsertBuilder`.
+2. OSS adapter calls `applyQueryExtensions(qb, ctx)` / `applyWriteExtensions(ib, ctx)` (no‑op in OSS) right before render, in **every** path.
+3. Enterprise subclass overrides those hooks: `super(...)` then append `org_id = :orgId` (reads `OrgContext.current().orgId()`), add `org_id` to insert columns and `ON CONFLICT` target.
+4. Cross‑org/admin queries (e.g. `getAllEventHandlersAllOrgs`, API‑gateway `1=1` bypass) are explicit enterprise methods that do **not** call the hook (or pass a context that suppresses it).
+5. Raw‑JDBC methods in the current Orkes DAOs are migrated onto the builder so the hook is universal (today some bypass the query wrapper).
+
+### 8.3 What about the runtime `hasTableOrgId` probe?
+
+Today Orkes branches SQL on whether a partition has `org_id` (`PostgresPartitionManagerDAO.hasTableOrgId`). This is an enterprise concern; it stays in the enterprise subclass/override and is invisible to OSS. New enterprise tables are born with `org_id`; legacy probing remains enterprise‑side.
+
+---
+
+## 9. Database migrations strategy
+
+- **OSS** ships its own Flyway locations per technology (e.g. `classpath:db/migration_postgres`, scheduler `classpath:db/migration_scheduler` with history table `flyway_schema_history_scheduler`). OSS tables have **no** `org_id`.
+- **Enterprise** ships an **additional** Flyway location (e.g. `classpath:db/migration_orkes_postgres`) with its own history table, that:
+  - adds `org_id` to OSS tables and recomposes PKs (today's `V714/V802/V803` pattern), and
+  - creates enterprise‑only tables (rbac/webhook/human/integration/gateway/org/archive…), born with `org_id`.
+- The enterprise server configures Flyway with **both** locations (today merged in `PostgresArchiveDAOConfiguration`); the OSS server configures only OSS locations.
+- Keep enterprise migrations idempotent (`IF NOT EXISTS`) and out‑of‑order tolerant (already the case).
+
+---
+
+## 10. Module map (OSS vs Enterprise) + cleanup
+
+### 10.1 OSS (public, consumed as artifacts)
+
+Reused from `conductor-oss/conductor`: `conductor-common`, `conductor-core`, `conductor-<db>-persistence` (postgres/mysql/cassandra/sqlite/redis), `conductor-redis-*`, `conductor-scheduler-core` + `conductor-scheduler-<db>-persistence`, `conductor-http-task`, `conductor-json-jq-task`, `*-storage`, `*-event-queue`, listeners, `conductor-rest`, `conductor-grpc*`, `conductor-server`/`server-lite`. Enhanced in place by the backport (§7) and by new seams (§6.3).
+
+### 10.2 Enterprise (private, layered on OSS)
+
+`enterprise-common` (OrgContext/IDTools/audit/flags), `enterprise-security` (RBAC/auth/SCIM/federation), `enterprise-engine` (`OrkesWorkflowExecutor` + remaining enterprise task subclasses), `enterprise-persistence-<db>` (org_id subclasses + enterprise stores + enterprise migrations), `scheduler-enterprise`, `webhooks`, `human`, `integration`, `event-processor`, `event-integration`, `api-gateway`, `api-orchestration`, `archive-persistence`, `ssm-properties`, `workers` (external), `server-enterprise`.
+
+### 10.3 Delete (stale build‑only dirs in orkes‑conductor; not in `settings.gradle`)
+
+`auth/`, `rest/`, `metrics/`, `core-api/`, `core-decider/`, `oss-decider/`, `orkes-decider/` (each contains only `build/`). Also remove `oss-core/` once Orkes consumes the OSS `conductor-core` artifact.
+
+### 10.4 Namespacing during moves
+
+When a class moves from `oss-core` (re‑implemented `com.netflix.conductor.*`) to consuming the OSS artifact, it simply **disappears** from Orkes (the OSS artifact provides it). When a new OSS seam is added, it is `org.conductoross.conductor.*`. Enterprise stays `io.orkes.conductor.*`.
+
+---
+
+## 11. Phased execution plan
+
+Each phase is independently shippable, gated by tests + the dependency checker. **Hexagonal decoupling and backporting lead; the repo/artifact cleave follows.**
+
+### Phase 0 — Guardrails & cleanup (no behavior change)
+**OSS & Enterprise.**
+- Add ArchUnit + a Gradle dependency‑rule task that fails on illegal `project(':...')` edges; baseline current violations (record them, don't fix yet).
+- Delete stale build‑only dirs in Orkes (§10.3) — except `oss-core` (removed in Phase 6).
+- Stand up `docs/convergence/` (this doc) and a CHANGELOG for the effort.
+- Acceptance: both repos build; checker runs and prints the baseline; no functional change.
+
+### Phase 1 — New OSS seams (additive, no behavior change)
+**OSS.**
+- Add `SqlQueryBuilder`/`SqlInsertBuilder` + `QueryContext` (`org.conductoross.conductor.persistence.query`) and wire the OSS `*-persistence` base DAOs to render via the builder; add no‑op `applyQueryExtensions`/`applyWriteExtensions` hooks called in every path.
+- Add the no‑op `WorkflowIntrospection` SPI + stub (if Decision §14.1 = shim).
+- Add `protected` seams to `WorkflowExecutorOps` (§6.3.4) with default behavior identical to today.
+- Optionally add OSS `TimeBasedIDGenerator` (property‑gated).
+- Acceptance: OSS unit + contract tests pass unchanged; `publishToMavenLocal` succeeds.
+
+### Phase 2 — Backport pure‑engine improvements (Orkes → OSS)
+**OSS** (source the diffs from Orkes `server/.../com/netflix/conductor/**`).
+- Backport, in order of safety: `OrkesExclusiveJoin`→`ExclusiveJoin`; `ForkJoinDynamicTaskMapper` two items; `OrkesSubWorkflowTaskMapper`→`SubWorkflowTaskMapper`; `DeciderTask` (new); `OrkesJoin`→`Join` (+ evaluator stack, strip introspection); `OrkesDoWhile`→`DoWhile`; the clean mappers/tasks; `OrkesForkJoinTaskMapper` parallel scheduling (without org_id propagation); engine core of `OrkesWorkflowExecutor`→`WorkflowExecutorOps` (using the Phase‑1 seams).
+- Each backport: port behavior, strip introspection (→ no‑op SPI) and any org_id, keep/merge existing OSS improvements, add/extend OSS tests.
+- Acceptance: OSS test‑harness green; behavior parity demonstrated by ported Orkes tests where applicable.
+
+### Phase 3 — Prove enterprise layering on one vertical (executor + one store)
+**Enterprise** (still inside `orkes-conductor`, consuming OSS via mavenLocal for the touched modules).
+- Re‑express `OrkesWorkflowExecutor` as `extends WorkflowExecutorOps` overriding the Phase‑1 seams (org_id/RBAC/limits/CDC/introspection). Delete the duplicated engine code.
+- Convert one OSS store (e.g. postgres `ExecutionDAO`) to an enterprise subclass overriding `applyQueryExtensions` for org_id; migrate its raw‑JDBC methods to the builder.
+- Acceptance: enterprise e2e for that vertical passes; `excludeFilters` shrinks by the backported tasks.
+
+### Phase 4 — Decouple persistence (remove sideways deps) + scheduler to OSS pattern
+**Enterprise.**
+- Split each technology persistence monolith into: OSS‑adapter consumption + `enterprise-persistence-<db>` (subclasses + enterprise stores). Remove `postgres/mysql/redis → scheduler/api-gateway/integration/human/api-orchestration` edges (move those stores into their enterprise feature modules or the enterprise persistence module that owns the port).
+- Replace `scheduler-oss`/`scheduler-enterprise` coupling: consume OSS `conductor-scheduler-core` + `conductor-scheduler-<db>-persistence`; `scheduler-enterprise` extends OSS scheduler‑core.
+- Acceptance: dependency checker shows zero sideways edges for persistence; scheduler runs via OSS adapters.
+
+### Phase 5 — Evict org/tenant from remaining OSS‑bound code; finalize enterprise modules
+**Enterprise.**
+- Move `OrgContext`/orgId/`IDTools`(org‑encoding)/audit‑with‑org into `enterprise-common`; consolidate ID‑generator duplicates.
+- Ensure webhooks/human/integration/event‑*/api‑gateway/api‑orchestration/archive‑persistence/ssm‑properties/security are clean enterprise modules depending only on OSS artifacts + enterprise ports.
+- Acceptance: no `io.orkes`/org_id references remain in any code destined for OSS; enterprise builds against OSS artifacts only.
+
+### Phase 6 — Cut over Orkes to OSS artifacts; delete `oss-core`
+**Enterprise.**
+- Remove the root `build.gradle` excludes for `org.conductoross:conductor-core` / `com.netflix.conductor`; add dependencies on the published OSS artifacts; **delete `oss-core/`**.
+- Update `settings.gradle` and module `build.gradle`s accordingly.
+- Acceptance: full enterprise server boots and passes e2e using OSS `conductor-core` artifact + enterprise modules; no re‑implemented engine remains.
+
+### Phase 7 — Publish, compose, harden
+**Both.**
+- OSS: finalize artifact coordinates/versioning; publish to GitHub Packages/S3 (CI).
+- Enterprise: pin OSS artifact version; produce branded composite `server-enterprise`.
+- Enforce ArchUnit/dependency gates in CI for both repos; run parity + migration + e2e suites for both editions.
+- Acceptance: OSS edition (org‑free, noauth) and enterprise edition (today's behavior) both green in CI.
+
+---
+
+## 12. Build, publish (maven local), and composite consumption
+
+**OSS → maven local (dev loop):**
+```bash
+# in ~/workprojects/conductor (branch orkes-converge-fork-conductor)
+./gradlew publishToMavenLocal -x test            # publishes org.conductoross:conductor-* to ~/.m2
+```
+
+**Enterprise consumes mavenLocal:** `orkes-conductor/build.gradle` already lists `mavenLocal()` first in `subprojects.repositories`. During migration, point the relevant module dependencies at the OSS coordinates, e.g.:
+```gradle
+implementation "org.conductoross:conductor-core:<version>"          // replaces project(':orkes-conductor-oss-core')
+implementation "org.conductoross:conductor-postgres-persistence:<version>"
+```
+Remove the global excludes in `orkes-conductor/build.gradle` (`exclude group: 'org.conductoross', module: 'conductor-core'`, and the `com.netflix.conductor` exclude) as modules cut over.
+
+**Version pinning:** use a single `revConductor` property in `gradle.properties`; bump deliberately. For CI, publish from the OSS branch to GitHub Packages and have the enterprise CI resolve that version.
+
+---
+
+## 13. Testing & verification
+
+- **Port contract tests:** reuse OSS `java-test-fixtures` (`AbstractSchedulerDAOTest`, etc.); add equivalents for any new ports. Enterprise adapters subclass the OSS contract tests to prove `super()` behavior is preserved.
+- **Engine parity:** port the Orkes engine unit tests for each backported class into OSS; keep them green. For enterprise subclasses, add tests proving org_id/RBAC/limits apply on top.
+- **Migration tests:** OSS migration set (no org_id) and enterprise migration set (adds org_id) both verified with Testcontainers.
+- **Two‑edition e2e:** OSS edition boots org‑free + noauth and runs canonical workflows; enterprise edition matches current behavior (RBAC, multi‑tenant, CDC).
+- **Dependency gate:** ArchUnit + Gradle checker in CI; fail on illegal edges.
+- **JaCoCo:** keep aggregated coverage; ensure backported classes retain/raise coverage.
+
+---
+
+## 14. Decisions (locked) & remaining risks
+
+### 14.0 Locked decisions (confirmed via review)
+- **D1 — Introspection:** OSS gets a no‑op SPI `org.conductoross.conductor.core.introspection.WorkflowIntrospection` + stub default; enterprise registers the real tracer. All backported call sites target this SPI.
+- **D2 — Time‑based IDs:** OSS gains a property‑gated `org.conductoross.conductor.core.utils.TimeBasedIDGenerator` (no org prefix), selected by `conductor.id.generator=time_based`; default stays UUID v4. FIFO‑by‑creation‑time priority is active only when the time‑based generator is selected. Enterprise keeps the org‑prefixing subclass + `getOrgId`/`getDate` decode.
+- **D3 — System‑task override:** OSS system‑task/mapper beans become overridable via `@ConditionalOnMissingBean` so enterprise subclasses win without `excludeFilters`; the enterprise exclude list is retired as classes are backported.
+- **D4 — REST authZ:** OSS controllers are auth‑free (noauth/permit‑all default); enterprise applies authorization as a security layer (filters + method‑security) and adds protected endpoints.
+- **D5 — Backport target:** backports land on the Orkes‑controlled fork branch (`orkes-converge-fork-conductor` on `bradyyie/conductor`) and are published from there; upstreaming to `conductor-oss/conductor` is decided later.
+
+### 14.1 Remaining engineering risks (not user decisions)
+- **Write‑path org_id in PK/`ON CONFLICT` (§6.3.2/§8.2):** the hardest seam; `SqlInsertBuilder` must compose conflict targets. Validate on `ExecutionDAO` insert/upsert first.
+- **Raw‑JDBC migration completeness:** some Orkes DAO methods bypass the query wrapper; all must move onto the builder or the org_id hook will miss them.
+- **Cross‑repo extension requires stable OSS APIs:** OSS superclasses stay non‑final with stable `protected` seams; treat as public API (semver).
+- **Release coordination:** OSS artifact version pinned in enterprise.
+- **`scheduler/core` namespace quirk:** OSS scheduler ports are `io.orkes.conductor.*` (already upstream); leave as‑is; new ports use `org.conductoross.conductor.*`.
+
+---
+
+## 15. Appendix — authoritative file‑path index
+
+### OSS (`~/workprojects/conductor`)
+- Ports: `core/src/main/java/com/netflix/conductor/dao/{ExecutionDAO,MetadataDAO,QueueDAO,PollDataDAO,RateLimitingDAO,ConcurrentExecutionLimitDAO,IndexDAO,EventHandlerDAO,WorkflowMessageQueueDAO}.java`; `core/.../org/conductoross/conductor/dao/FileMetadataDAO.java`
+- DAL facade: `core/src/main/java/com/netflix/conductor/core/dal/ExecutionDAOFacade.java`
+- Engine: `core/.../core/execution/WorkflowExecutor.java`, `WorkflowExecutorOps.java`, `AsyncSystemTaskExecutor.java`, `DeciderService.java`
+- System tasks: `core/.../core/execution/tasks/{WorkflowSystemTask,SystemTaskRegistry,SystemTaskWorkerCoordinator,SystemTaskWorker,Join,ExclusiveJoin,DoWhile,SubWorkflow,Event,Wait,SetVariable,Terminate,Switch,Inline,StartWorkflow,Human,Fork,Noop,PullWorkflowMessages}.java`
+- Mappers: `core/.../core/execution/mapper/{ForkJoinDynamicTaskMapper,ForkJoinTaskMapper,JoinTaskMapper,SubWorkflowTaskMapper,SimpleTaskMapper,SwitchTaskMapper,DoWhileTaskMapper,WaitTaskMapper,...}.java`
+- SPIs: `core/.../core/listener/{WorkflowStatusListener,TaskStatusListener}.java` (+ `…Stub`); `core/.../org/conductoross/conductor/core/listener/MetadataChangeListener.java`; `common/.../common/utils/ExternalPayloadStorage.java`; `core/.../core/events/{EventQueueProvider,EventQueues}.java`; `core/.../core/sync/Lock.java` + `…/sync/noop/NoopLock.java`; `core/.../service/ExecutionLockService.java`
+- IDs: `core/.../core/utils/IDGenerator.java`
+- Core config: `core/.../core/config/ConductorCoreConfiguration.java`
+- Postgres adapter: `postgres-persistence/.../postgres/config/PostgresConfiguration.java`, `postgres-persistence/.../postgres/dao/PostgresBaseDAO.java`
+- Scheduler reference: `scheduler/core/.../dao/scheduler/SchedulerDAO.java`, `…/dao/scheduler/SchedulerCacheDAO.java`, `…/dao/archive/SchedulerArchivalDAO.java`, `…/scheduler/config/{SchedulerOssConfiguration,SchedulerConditions}.java`, `scheduler/core/src/main/resources/META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports`; adapter `scheduler/postgres-persistence/.../scheduler/postgres/{dao/PostgresSchedulerDAO,config/PostgresSchedulerConfiguration}.java` + its `AutoConfiguration.imports` + `db/migration_scheduler/`
+- App entrypoint: `server/src/main/java/com/netflix/conductor/Conductor.java`
+
+### Enterprise (`~/workprojects/orkes-conductor`)
+- Engine overrides: `server/src/main/java/com/netflix/conductor/core/execution/{OrkesWorkflowExecutor,OrkesExecutionDAOFacade,DeciderTask,WorkflowRepairer}.java`, `.../tasks/Orkes*.java`, `.../mapper/Orkes*.java`
+- App + excludeFilters: `server/src/main/java/io/orkes/conductor/OrkesConductorApplication.java`
+- Context/IDs: `common/.../common/context/OrkesRequestContext.java`, `common/.../id/IDTools.java`, `core/.../id/TimeBasedUUIDGenerator.java`, `workers/.../event/TimeBasedUUIDGenerator.java`
+- Feature flags/conditions: `common/.../config/{FeatureFlags,PermissionsDisabledCondition,AuthnAndAuthzEnabledCondition}.java`
+- Security: `core/.../security/*`, `server/.../security/*`
+- Persistence (to split): `postgres-persistence/.../dao/postgres/**`, `mysql-persistence/**`, `redis-persistence/**`; org filter: `postgres-persistence/.../gateway/OrgFilterHelper.java`; query util: `postgres-persistence/.../util/Query.java`
+- Flyway (enterprise): `server/.../dao/config/PostgresArchiveDAOConfiguration.java`, `postgres-persistence/src/main/resources/db/migration_archive_postgres/`
+
+---
+
+*End of plan. This document is the single source of truth for the convergence effort; update it via PR as decisions in §14 are resolved.*
