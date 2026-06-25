@@ -14,6 +14,7 @@ package com.netflix.conductor.core.execution.mapper;
 
 import java.util.*;
 
+import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -99,9 +100,20 @@ public class SubWorkflowTaskMapper implements TaskMapper {
             subWorkflowTaskToDomain = (Map) uncheckedTaskToDomain;
         }
 
-        // NOTE: Orkes additionally inherits the parent workflow's idempotency key when a strategy
-        // is set but no key is supplied. That requires WorkflowModel to carry the idempotency key
-        // (OSS does not persist it on the model today), so it is deferred to a follow-up.
+        // Idempotency (backported from Orkes): when the sub-workflow task declares a strategy but
+        // no key of its own, inherit the parent workflow's idempotency key.
+        Object idempotencyKey = resolvedParams.get("idempotencyKey");
+        Object idempotencyStrategy = resolvedParams.get("idempotencyStrategy");
+        if (idempotencyStrategy != null
+                && (idempotencyKey == null || StringUtils.isEmpty(idempotencyKey.toString()))) {
+            idempotencyKey = workflowModel.getIdempotencyKey();
+            if (idempotencyKey == null || StringUtils.isEmpty(idempotencyKey.toString())) {
+                LOGGER.warn(
+                        "Sub-workflow task in workflow {} has an idempotency strategy but no idempotency key set on the task or parent workflow",
+                        workflowModel.getWorkflowId());
+            }
+        }
+
         TaskModel subWorkflowTask = taskMapperContext.createTaskModel();
         subWorkflowTask.setTaskType(TASK_TYPE_SUB_WORKFLOW);
         subWorkflowTask.addInput("subWorkflowName", subWorkflowName);
@@ -109,8 +121,8 @@ public class SubWorkflowTaskMapper implements TaskMapper {
         subWorkflowTask.addInput("subWorkflowVersion", subWorkflowVersion);
         subWorkflowTask.addInput("subWorkflowTaskToDomain", subWorkflowTaskToDomain);
         subWorkflowTask.addInput("subWorkflowDefinition", subWorkflowDefinition);
-        subWorkflowTask.addInput("idempotencyKey", resolvedParams.get("idempotencyKey"));
-        subWorkflowTask.addInput("idempotencyStrategy", resolvedParams.get("idempotencyStrategy"));
+        subWorkflowTask.addInput("idempotencyKey", idempotencyKey);
+        subWorkflowTask.addInput("idempotencyStrategy", idempotencyStrategy);
         subWorkflowTask.addInput("workflowInput", taskMapperContext.getTaskInput());
         subWorkflowTask.setStatus(TaskModel.Status.SCHEDULED);
         subWorkflowTask.setCallbackAfterSeconds(workflowTask.getStartDelay());

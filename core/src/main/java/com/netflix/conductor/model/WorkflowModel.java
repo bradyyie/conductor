@@ -108,6 +108,10 @@ public class WorkflowModel {
 
     private Status previousStatus;
 
+    // Idempotency key supplied when the workflow was started (used e.g. so child sub-workflows can
+    // inherit the parent's idempotency key when they declare a strategy but no key of their own).
+    private String idempotencyKey;
+
     @JsonIgnore private Map<String, Object> input = new HashMap<>();
 
     @JsonIgnore private Map<String, Object> output = new HashMap<>();
@@ -316,6 +320,14 @@ public class WorkflowModel {
 
     public void setWorkflowDefinition(WorkflowDef workflowDefinition) {
         this.workflowDefinition = workflowDefinition;
+    }
+
+    public String getIdempotencyKey() {
+        return idempotencyKey;
+    }
+
+    public void setIdempotencyKey(String idempotencyKey) {
+        this.idempotencyKey = idempotencyKey;
     }
 
     public String getExternalInputPayloadStoragePath() {

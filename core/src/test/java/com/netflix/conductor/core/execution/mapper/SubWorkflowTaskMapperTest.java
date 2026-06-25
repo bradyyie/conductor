@@ -158,6 +158,42 @@ public class SubWorkflowTaskMapperTest {
     }
 
     @Test
+    public void inheritsParentIdempotencyKeyWhenStrategySetButNoKey() {
+        WorkflowModel workflowModel = new WorkflowModel();
+        workflowModel.setWorkflowDefinition(new WorkflowDef());
+        workflowModel.setIdempotencyKey("parent-key");
+
+        WorkflowTask workflowTask = new WorkflowTask();
+        SubWorkflowParams subWorkflowParams = new SubWorkflowParams();
+        subWorkflowParams.setName("Foo");
+        subWorkflowParams.setVersion(1);
+        workflowTask.setSubWorkflowParam(subWorkflowParams);
+
+        Map<String, Object> resolved = new HashMap<>();
+        resolved.put("name", "FooWorkFlow");
+        resolved.put("version", 1);
+        // strategy present, but no idempotencyKey on the sub-workflow task
+        resolved.put("idempotencyStrategy", "RETURN_EXISTING");
+        when(parametersUtils.getTaskInputV2(anyMap(), any(WorkflowModel.class), any(), any()))
+                .thenReturn(resolved);
+
+        TaskMapperContext taskMapperContext =
+                TaskMapperContext.newBuilder()
+                        .withWorkflowModel(workflowModel)
+                        .withWorkflowTask(workflowTask)
+                        .withTaskInput(new HashMap<>())
+                        .withRetryCount(0)
+                        .withTaskId(idGenerator.generate())
+                        .withDeciderService(deciderService)
+                        .build();
+
+        List<TaskModel> mappedTasks = subWorkflowTaskMapper.getMappedTasks(taskMapperContext);
+
+        assertEquals(1, mappedTasks.size());
+        assertEquals("parent-key", mappedTasks.get(0).getInputData().get("idempotencyKey"));
+    }
+
+    @Test
     public void testTaskToDomain() {
         // Given
         WorkflowDef workflowDef = new WorkflowDef();

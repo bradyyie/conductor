@@ -2271,6 +2271,7 @@ public class WorkflowExecutorOps implements WorkflowExecutor {
         workflow.setEvent(input.getEvent());
         workflow.setTaskToDomain(input.getTaskToDomain());
         workflow.setVariables(workflowDefinition.getVariables());
+        workflow.setIdempotencyKey(input.getIdempotencyKey());
 
         Map<String, Object> workflowInput = input.getWorkflowInput();
         if (workflowInput != null && !workflowInput.isEmpty()) {
