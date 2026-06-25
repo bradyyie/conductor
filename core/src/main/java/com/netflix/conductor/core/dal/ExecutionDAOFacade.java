@@ -833,10 +833,36 @@ public class ExecutionDAOFacade {
         public void run() {
             try {
                 WorkflowModel workflowModel = executionDAO.getWorkflow(workflowId, false);
-                indexDAO.asyncIndexWorkflow(new WorkflowSummary(workflowModel.toWorkflow()));
-            } catch (Exception e) {
-                LOGGER.error("Unable to update workflow: {}", workflowId, e);
-            }
-        }
+                 indexDAO.asyncIndexWorkflow(new WorkflowSummary(workflowModel.toWorkflow()));
+             } catch (Exception e) {
+                 LOGGER.error("Unable to update workflow: {}", workflowId, e);
+             }
+         }
+     }
+
+    // --- Delegators backported from Orkes (engine extensions over ExecutionDAO) ---
+
+    public java.util.Map<String, Long> getRunningWorkflowCountByName() {
+        return executionDAO.getRunningWorkflowCountByName();
+    }
+
+    public java.util.Map<String, Long> getInProgressTaskCountByName(int maxNames) {
+        return executionDAO.getInProgressTaskCountByName(maxNames);
+    }
+
+    public java.util.Set<String> getTaskIdsForWorkflow(String workflowId) {
+        return executionDAO.getTaskIdsForWorkflow(workflowId);
+    }
+
+    public WorkflowModel getWorkflowWithTasks(String workflowId) {
+        return executionDAO.getWorkflowWithTasks(workflowId);
+    }
+
+    public void removeWorkflowPayload(WorkflowModel workflow, int ttlSeconds) {
+        executionDAO.removeWorkflowPayload(workflow, ttlSeconds);
+    }
+
+    public void removeTaskPayload(TaskModel task, int ttlSeconds) {
+        executionDAO.removeTaskPayload(task, ttlSeconds);
     }
 }

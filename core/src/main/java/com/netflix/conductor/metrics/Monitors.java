@@ -501,4 +501,53 @@ public class Monitors {
     public static void recordTaskExecLogSize(int val) {
         gauge("task_exec_log_size", val);
     }
+
+    // --- Engine metrics backported from Orkes (feature-agnostic; no tenant/namespace tags) ---
+
+    private static final String CRITICAL_ERROR_METRIC_NAME = "_fatal_error";
+
+    public enum CriticalError {
+        RedisConnection,
+        Postgres,
+        Mysql,
+        Cassandra,
+        RedisMemory,
+        RateLimited
+    }
+
+    public static void recordCriticalError(CriticalError error) {
+        getCounter(CRITICAL_ERROR_METRIC_NAME, "errorType", error.name()).increment();
+    }
+
+    public static void recordDatadogPublishFailure(String exceptionType) {
+        String safeType = exceptionType != null ? exceptionType : "Unknown";
+        getCounter("datadog_metrics_publish_failures", "exception_type", safeType).increment();
+    }
+
+    public static void recordBatchJobExecutionTime(String jobName, long duration) {
+        getTimer("batch_job", "jobName", jobName).record(duration, TimeUnit.MILLISECONDS);
+    }
+
+    public static void recordWorkflowRateLimited(WorkflowModel workflow) {
+        getCounter("workflow_rate_limited", "workflowName", workflow.getWorkflowName()).increment();
+    }
+
+    public static void recordTaskSize(TaskModel task, long sizeBytes, long limitBytes) {
+        if (sizeBytes > limitBytes) {
+            getCounter("limit_breach", "limitType", "TaskSize", "taskType", task.getTaskType())
+                    .increment();
+        }
+    }
+
+    public static void recordWorkflowSize(WorkflowModel workflow, long sizeBytes, long limitBytes) {
+        if (sizeBytes > limitBytes) {
+            getCounter(
+                            "limit_breach",
+                            "limitType",
+                            "WorkflowSize",
+                            "workflowName",
+                            workflow.getWorkflowName())
+                    .increment();
+        }
+    }
 }

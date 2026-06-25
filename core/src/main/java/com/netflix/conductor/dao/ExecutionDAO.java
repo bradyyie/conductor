@@ -13,6 +13,8 @@
 package com.netflix.conductor.dao;
 
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 import com.netflix.conductor.common.metadata.events.EventExecution;
 import com.netflix.conductor.common.metadata.tasks.TaskDef;
@@ -296,5 +298,33 @@ public interface ExecutionDAO {
 
     default void restoreWorkflow(WorkflowModel workflowModel) {
         throw new UnsupportedOperationException();
+    }
+
+    default Set<String> getTaskIdsForWorkflow(String workflowId) {
+        throw new UnsupportedOperationException();
+    }
+
+    default WorkflowModel getWorkflowWithTasks(String workflowId) {
+        throw new UnsupportedOperationException();
+    }
+
+    default void removeWorkflowPayload(WorkflowModel workflow, int ttlSeconds) {
+        throw new UnsupportedOperationException();
+    }
+
+    default void removeTaskPayload(TaskModel task, int ttlSeconds) {
+        throw new UnsupportedOperationException();
+    }
+
+    default Map<String, Long> getRunningWorkflowCountByName() {
+        return Map.of();
+    }
+
+    default Map<String, Long> getInProgressTaskCountByName(int maxNames) {
+        return Map.of();
+    }
+
+    default boolean writesToArchiveShards() {
+        return false;
     }
 }

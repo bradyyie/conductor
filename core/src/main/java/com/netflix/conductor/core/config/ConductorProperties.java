@@ -66,6 +66,11 @@ public class ConductorProperties {
      */
     private boolean resolveSubWorkflowVersionAtRuntime = false;
 
+    private Duration eventExecutionRetentionDuration = Duration.ofSeconds(3600);
+    private Integer eventCleanupLoopSize = 100;
+    private Duration metadataCacheTTL = Duration.ofSeconds(60);
+    private boolean fallbackEnabled;
+
     /** The number of threads to use to do background sweep on active workflows. */
     private int sweeperThreadCount = Runtime.getRuntime().availableProcessors() * 2;
 
@@ -315,6 +320,38 @@ public class ConductorProperties {
 
     public void setResolveSubWorkflowVersionAtRuntime(boolean resolveSubWorkflowVersionAtRuntime) {
         this.resolveSubWorkflowVersionAtRuntime = resolveSubWorkflowVersionAtRuntime;
+    }
+
+    public Duration getEventExecutionRetentionDuration() {
+        return eventExecutionRetentionDuration;
+    }
+
+    public void setEventExecutionRetentionDuration(Duration eventExecutionRetentionDuration) {
+        this.eventExecutionRetentionDuration = eventExecutionRetentionDuration;
+    }
+
+    public Integer getEventCleanupLoopSize() {
+        return eventCleanupLoopSize;
+    }
+
+    public void setEventCleanupLoopSize(Integer eventCleanupLoopSize) {
+        this.eventCleanupLoopSize = eventCleanupLoopSize;
+    }
+
+    public Duration getMetadataCacheTTL() {
+        return metadataCacheTTL;
+    }
+
+    public void setMetadataCacheTTL(Duration metadataCacheTTL) {
+        this.metadataCacheTTL = metadataCacheTTL;
+    }
+
+    public boolean isFallbackEnabled() {
+        return fallbackEnabled;
+    }
+
+    public void setFallbackEnabled(boolean fallbackEnabled) {
+        this.fallbackEnabled = fallbackEnabled;
     }
 
     public int getSweeperThreadCount() {
