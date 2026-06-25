@@ -1136,6 +1136,7 @@ public class WorkflowExecutorOps implements WorkflowExecutor {
     /** Records a metric for the "decide" process. */
     @Override
     public WorkflowModel decide(String workflowId) {
+        onDecide(workflowId);
         StopWatch watch = new StopWatch();
         watch.start();
         boolean lockAcquired = executionLockService.acquireLock(workflowId);
@@ -2087,6 +2088,7 @@ public class WorkflowExecutorOps implements WorkflowExecutor {
     @Override
     public String startWorkflow(StartWorkflowInput input) {
         WorkflowDef workflowDefinition = resolveWorkflowDefinition(input);
+        beforeStartWorkflow(input, workflowDefinition);
         String workflowId =
                 Optional.ofNullable(input.getWorkflowId()).orElseGet(idGenerator::generate);
         WorkflowModel workflow = createWorkflowModel(input, workflowDefinition, workflowId);
@@ -2122,6 +2124,7 @@ public class WorkflowExecutorOps implements WorkflowExecutor {
                 "workflowId must be present for idempotent workflow start");
 
         WorkflowDef workflowDefinition = resolveWorkflowDefinition(input);
+        beforeStartWorkflow(input, workflowDefinition);
         String workflowId = input.getWorkflowId();
 
         if (!executionLockService.acquireLock(workflowId)) {
@@ -2338,5 +2341,33 @@ public class WorkflowExecutorOps implements WorkflowExecutor {
                     workflow.getWorkflowId(),
                     e);
         }
+    }
+
+    // -------------------------------------------------------------------------------------------
+    // Extension seams (open-core).
+    //
+    // These protected hooks let an add-on module (e.g. an enterprise edition) subclass this
+    // executor and layer additional, feature-agnostic-to-OSS behaviour (authorization, tenancy,
+    // quotas, tracing, ...) at well-defined points, instead of replacing the whole executor. They
+    // are no-ops here so OSS behaviour is unchanged.
+    // -------------------------------------------------------------------------------------------
+
+    /**
+     * Invoked at the very start of {@link #startWorkflow(StartWorkflowInput)} and {@link
+     * #startWorkflowIdempotent(StartWorkflowInput)}, after the workflow definition has been
+     * resolved and before the workflow is created. A subclass may inspect/validate the request and
+     * throw to abort the start (e.g. permission or quota checks). No-op by default.
+     */
+    protected void beforeStartWorkflow(StartWorkflowInput input, WorkflowDef workflowDefinition) {
+        // no-op
+    }
+
+    /**
+     * Invoked at the start of {@link #decide(String)} before the workflow is loaded. A subclass may
+     * use this to establish any ambient context derived from the workflow id (the id is the only
+     * thing known at this point). No-op by default.
+     */
+    protected void onDecide(String workflowId) {
+        // no-op
     }
 }
