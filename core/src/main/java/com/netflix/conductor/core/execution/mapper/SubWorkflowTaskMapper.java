@@ -23,6 +23,7 @@ import com.netflix.conductor.common.metadata.tasks.TaskType;
 import com.netflix.conductor.common.metadata.workflow.SubWorkflowParams;
 import com.netflix.conductor.common.metadata.workflow.WorkflowDef;
 import com.netflix.conductor.common.metadata.workflow.WorkflowTask;
+import com.netflix.conductor.core.config.ConductorProperties;
 import com.netflix.conductor.core.exception.TerminateWorkflowException;
 import com.netflix.conductor.core.utils.ParametersUtils;
 import com.netflix.conductor.dao.MetadataDAO;
@@ -38,10 +39,15 @@ public class SubWorkflowTaskMapper implements TaskMapper {
 
     private final ParametersUtils parametersUtils;
     private final MetadataDAO metadataDAO;
+    private final ConductorProperties properties;
 
-    public SubWorkflowTaskMapper(ParametersUtils parametersUtils, MetadataDAO metadataDAO) {
+    public SubWorkflowTaskMapper(
+            ParametersUtils parametersUtils,
+            MetadataDAO metadataDAO,
+            ConductorProperties properties) {
         this.parametersUtils = parametersUtils;
         this.metadataDAO = metadataDAO;
+        this.properties = properties;
     }
 
     @Override
@@ -55,23 +61,36 @@ public class SubWorkflowTaskMapper implements TaskMapper {
         LOGGER.debug("TaskMapperContext {} in SubWorkflowTaskMapper", taskMapperContext);
         WorkflowTask workflowTask = taskMapperContext.getWorkflowTask();
         WorkflowModel workflowModel = taskMapperContext.getWorkflowModel();
-        String taskId = taskMapperContext.getTaskId();
         // Check if there are sub workflow parameters, if not throw an exception, cannot initiate a
         // sub-workflow without workflow params
         SubWorkflowParams subWorkflowParams = getSubWorkflowParams(workflowTask);
+        // Normalise version 0 to "latest" (null) so it is treated consistently downstream
+        // (backported from Orkes).
+        if (subWorkflowParams.getVersion() != null && subWorkflowParams.getVersion() == 0) {
+            subWorkflowParams.setVersion(null);
+        }
 
         Map<String, Object> resolvedParams =
                 getSubWorkflowInputParameters(workflowModel, subWorkflowParams);
 
-        String subWorkflowName = resolvedParams.get("name").toString();
+        // Null-safe name read (backported from Orkes): the name may legitimately be absent when an
+        // inline definition is supplied.
+        String subWorkflowName =
+                Optional.ofNullable(resolvedParams.get("name")).map(Object::toString).orElse(null);
         Object subWorkflowDefinition = resolvedParams.get("workflowDefinition");
 
         // Only resolve the sub-workflow version when no inline definition is provided.
-        // When an inline definition is present, SubWorkflow.start() uses it directly and
-        // the version is irrelevant, so skip the potentially-failing MetadataDAO lookup.
+        // When an inline definition is present, SubWorkflow.start() uses it directly and the
+        // version is irrelevant, so skip the potentially-failing MetadataDAO lookup. Additionally,
+        // when conductor.app.resolve-sub-workflow-version-at-runtime is enabled and no explicit
+        // version was supplied, defer resolution to SubWorkflow.start() so the latest version is
+        // chosen at execution time (backported from Orkes).
         Integer subWorkflowVersion = null;
-        if (subWorkflowDefinition == null) {
-            subWorkflowVersion = getSubWorkflowVersion(resolvedParams, subWorkflowName);
+        if (subWorkflowDefinition == null && subWorkflowName != null) {
+            if (!properties.isResolveSubWorkflowVersionAtRuntime()
+                    || resolvedParams.get("version") != null) {
+                subWorkflowVersion = getSubWorkflowVersion(resolvedParams, subWorkflowName);
+            }
         }
 
         Map subWorkflowTaskToDomain = null;
@@ -80,6 +99,9 @@ public class SubWorkflowTaskMapper implements TaskMapper {
             subWorkflowTaskToDomain = (Map) uncheckedTaskToDomain;
         }
 
+        // NOTE: Orkes additionally inherits the parent workflow's idempotency key when a strategy
+        // is set but no key is supplied. That requires WorkflowModel to carry the idempotency key
+        // (OSS does not persist it on the model today), so it is deferred to a follow-up.
         TaskModel subWorkflowTask = taskMapperContext.createTaskModel();
         subWorkflowTask.setTaskType(TASK_TYPE_SUB_WORKFLOW);
         subWorkflowTask.addInput("subWorkflowName", subWorkflowName);

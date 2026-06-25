@@ -25,6 +25,7 @@ import com.netflix.conductor.common.config.ObjectMapperProvider;
 import com.netflix.conductor.common.metadata.workflow.SubWorkflowParams;
 import com.netflix.conductor.common.metadata.workflow.WorkflowDef;
 import com.netflix.conductor.common.metadata.workflow.WorkflowTask;
+import com.netflix.conductor.core.config.ConductorProperties;
 import com.netflix.conductor.core.exception.TerminateWorkflowException;
 import com.netflix.conductor.core.execution.DeciderService;
 import com.netflix.conductor.core.utils.IDGenerator;
@@ -38,9 +39,13 @@ import static com.netflix.conductor.common.metadata.tasks.TaskType.TASK_TYPE_SUB
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyMap;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 public class SubWorkflowTaskMapperTest {
@@ -56,7 +61,8 @@ public class SubWorkflowTaskMapperTest {
     public void setUp() {
         parametersUtils = mock(ParametersUtils.class);
         MetadataDAO metadataDAO = mock(MetadataDAO.class);
-        subWorkflowTaskMapper = new SubWorkflowTaskMapper(parametersUtils, metadataDAO);
+        subWorkflowTaskMapper =
+                new SubWorkflowTaskMapper(parametersUtils, metadataDAO, new ConductorProperties());
         deciderService = mock(DeciderService.class);
         idGenerator = new IDGenerator();
     }
@@ -110,6 +116,45 @@ public class SubWorkflowTaskMapperTest {
         assertEquals(TASK_TYPE_SUB_WORKFLOW, subWorkFlowTask.getTaskType());
         assertEquals(30, subWorkFlowTask.getCallbackAfterSeconds());
         assertEquals(taskToDomain, subWorkFlowTask.getInputData().get("subWorkflowTaskToDomain"));
+    }
+
+    @Test
+    public void defersVersionResolutionWhenRuntimeResolutionEnabledAndNoExplicitVersion() {
+        MetadataDAO metadataDAO = mock(MetadataDAO.class);
+        ParametersUtils localParametersUtils = mock(ParametersUtils.class);
+        ConductorProperties properties = new ConductorProperties();
+        properties.setResolveSubWorkflowVersionAtRuntime(true);
+        SubWorkflowTaskMapper mapper =
+                new SubWorkflowTaskMapper(localParametersUtils, metadataDAO, properties);
+
+        WorkflowModel workflowModel = new WorkflowModel();
+        workflowModel.setWorkflowDefinition(new WorkflowDef());
+        WorkflowTask workflowTask = new WorkflowTask();
+        SubWorkflowParams subWorkflowParams = new SubWorkflowParams();
+        subWorkflowParams.setName("Foo"); // no explicit version
+        workflowTask.setSubWorkflowParam(subWorkflowParams);
+
+        Map<String, Object> resolved = new HashMap<>();
+        resolved.put("name", "FooWorkFlow"); // no "version" key
+        when(localParametersUtils.getTaskInputV2(anyMap(), any(WorkflowModel.class), any(), any()))
+                .thenReturn(resolved);
+
+        TaskMapperContext taskMapperContext =
+                TaskMapperContext.newBuilder()
+                        .withWorkflowModel(workflowModel)
+                        .withWorkflowTask(workflowTask)
+                        .withTaskInput(new HashMap<>())
+                        .withRetryCount(0)
+                        .withTaskId(idGenerator.generate())
+                        .withDeciderService(deciderService)
+                        .build();
+
+        List<TaskModel> mappedTasks = mapper.getMappedTasks(taskMapperContext);
+
+        assertEquals(1, mappedTasks.size());
+        // Version resolution is deferred to runtime: no metadata lookup, null version on the task.
+        assertNull(mappedTasks.get(0).getInputData().get("subWorkflowVersion"));
+        verify(metadataDAO, never()).getLatestWorkflowDef(anyString());
     }
 
     @Test
@@ -202,7 +247,9 @@ public class SubWorkflowTaskMapperTest {
         ParametersUtils realParametersUtils =
                 new ParametersUtils(new ObjectMapperProvider().getObjectMapper());
         MetadataDAO metadataDAO = mock(MetadataDAO.class);
-        SubWorkflowTaskMapper mapper = new SubWorkflowTaskMapper(realParametersUtils, metadataDAO);
+        SubWorkflowTaskMapper mapper =
+                new SubWorkflowTaskMapper(
+                        realParametersUtils, metadataDAO, new ConductorProperties());
 
         // Set up a workflow model that has a completed task whose output contains the
         // inline workflow definition Map we want to pass to the sub-workflow.

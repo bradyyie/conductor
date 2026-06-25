@@ -58,6 +58,14 @@ public class ConductorProperties {
      */
     private boolean humanTaskPreventsDeciderQueue = true;
 
+    /**
+     * When true, a SUB_WORKFLOW task that does not specify an explicit version does NOT resolve the
+     * sub-workflow version at mapping time; the latest version is resolved later, when the
+     * sub-workflow actually starts. When false (default), the version is resolved at mapping time
+     * via the metadata store (the historical behaviour).
+     */
+    private boolean resolveSubWorkflowVersionAtRuntime = false;
+
     /** The number of threads to use to do background sweep on active workflows. */
     private int sweeperThreadCount = Runtime.getRuntime().availableProcessors() * 2;
 
@@ -299,6 +307,14 @@ public class ConductorProperties {
 
     public void setHumanTaskPreventsDeciderQueue(boolean humanTaskPreventsDeciderQueue) {
         this.humanTaskPreventsDeciderQueue = humanTaskPreventsDeciderQueue;
+    }
+
+    public boolean isResolveSubWorkflowVersionAtRuntime() {
+        return resolveSubWorkflowVersionAtRuntime;
+    }
+
+    public void setResolveSubWorkflowVersionAtRuntime(boolean resolveSubWorkflowVersionAtRuntime) {
+        this.resolveSubWorkflowVersionAtRuntime = resolveSubWorkflowVersionAtRuntime;
     }
 
     public int getSweeperThreadCount() {

@@ -183,7 +183,8 @@ public class TestWorkflowExecutor {
                 USER_DEFINED.name(), new UserDefinedTaskMapper(parametersUtils, metadataDAO));
         taskMappers.put(SIMPLE.name(), new SimpleTaskMapper(parametersUtils));
         taskMappers.put(
-                SUB_WORKFLOW.name(), new SubWorkflowTaskMapper(parametersUtils, metadataDAO));
+                SUB_WORKFLOW.name(),
+                new SubWorkflowTaskMapper(parametersUtils, metadataDAO, new ConductorProperties()));
         taskMappers.put(EVENT.name(), new EventTaskMapper(parametersUtils));
         taskMappers.put(WAIT.name(), new WaitTaskMapper(parametersUtils));
         taskMappers.put(HTTP.name(), new HTTPTaskMapper(parametersUtils, metadataDAO));
