@@ -124,6 +124,9 @@ public class WorkflowModel {
 
     private WorkflowConsistency workflowConsistency = WorkflowConsistency.DURABLE;
 
+    private Map<String, WorkflowNotifications> notifications =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
     @JsonIgnore private Map<String, Object> input = new HashMap<>();
 
     @JsonIgnore private Map<String, Object> output = new HashMap<>();
@@ -380,6 +383,17 @@ public class WorkflowModel {
 
     public void setWorkflowConsistency(WorkflowConsistency workflowConsistency) {
         this.workflowConsistency = workflowConsistency;
+    }
+
+    public Map<String, WorkflowNotifications> getNotifications() {
+        if (notifications == null) {
+            notifications = new java.util.concurrent.ConcurrentHashMap<>();
+        }
+        return notifications;
+    }
+
+    public void setNotifications(Map<String, WorkflowNotifications> notifications) {
+        this.notifications = new java.util.concurrent.ConcurrentHashMap<>(notifications);
     }
 
     public String getExternalInputPayloadStoragePath() {

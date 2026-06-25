@@ -550,4 +550,29 @@ public class Monitors {
                     .increment();
         }
     }
+
+    private static volatile boolean skipLabels = false;
+
+    public static boolean isSkipLabels() {
+        return skipLabels;
+    }
+
+    public static void setSkipLabels(boolean value) {
+        skipLabels = value;
+    }
+
+    public static void recordTaskCreated(TaskModel task) {
+        getCounter("task_created_count", "taskType", task.getTaskType()).increment();
+    }
+
+    public static void recordTaskStartCount(TaskModel task) {
+        getCounter("task_start_count", "taskType", task.getTaskType()).increment();
+    }
+
+    public static void recordTaskComplete(TaskModel task) {
+        getTimer("task_completed", "taskType", task.getTaskType())
+                .record(
+                        Math.max(0, task.getEndTime() - task.getStartTime()),
+                        TimeUnit.MILLISECONDS);
+    }
 }

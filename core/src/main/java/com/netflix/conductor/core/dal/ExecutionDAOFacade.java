@@ -865,4 +865,12 @@ public class ExecutionDAOFacade {
     public void removeTaskPayload(TaskModel task, int ttlSeconds) {
         executionDAO.removeTaskPayload(task, ttlSeconds);
     }
+
+    public WorkflowModel getWorkflowModelWithTasks(String workflowId) {
+        return getWorkflowModel(workflowId, true);
+    }
+
+    public void restoreWorkflow(WorkflowModel workflowModel) {
+        executionDAO.restoreWorkflow(workflowModel);
+    }
 }

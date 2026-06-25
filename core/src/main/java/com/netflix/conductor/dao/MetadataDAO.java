@@ -40,6 +40,10 @@ public interface MetadataDAO {
      */
     TaskDef getTaskDef(String name);
 
+    default TaskDef getTaskDef(String name, boolean skipCache) {
+        return getTaskDef(name);
+    }
+
     /**
      * @return All the task definitions
      */
@@ -65,6 +69,10 @@ public interface MetadataDAO {
      * @return Workflow Definition
      */
     Optional<WorkflowDef> getLatestWorkflowDef(String name);
+
+    default WorkflowDef getLatestWorkflowDef(String orgId, String name) {
+        return getLatestWorkflowDef(name).orElse(null);
+    }
 
     /**
      * @param name Name of the workflow
