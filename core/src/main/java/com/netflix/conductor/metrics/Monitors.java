@@ -534,21 +534,52 @@ public class Monitors {
     }
 
     public static void recordTaskSize(TaskModel task, long sizeBytes, long limitBytes) {
-        if (sizeBytes > limitBytes) {
-            getCounter("limit_breach", "limitType", "TaskSize", "taskType", task.getTaskType())
-                    .increment();
+        if (!sizeLimitMetricsEnabled) {
+            return;
+        }
+        try {
+            String taskType = StringUtils.defaultIfBlank(task.getTaskType(), "unknown");
+            String workflowName = StringUtils.defaultIfBlank(task.getWorkflowType(), "unknown");
+            distributionSummary(TASK_SIZE_BYTES, "taskType", taskType, "workflowName", workflowName)
+                    .record(sizeBytes);
+            distributionSummary(TASK_SIZE_RATIO, "taskType", taskType, "workflowName", workflowName)
+                    .record(sizeRatio(sizeBytes, limitBytes));
+            if (sizeBytes > limitBytes) {
+                getCounter(
+                                "limit_breach",
+                                "limitType",
+                                "TaskSize",
+                                "workflowName",
+                                workflowName,
+                                "taskType",
+                                taskType)
+                        .increment();
+            }
+        } catch (Exception e) {
+            log.debug("Failed to emit task size metric: {}", e.getMessage());
         }
     }
 
     public static void recordWorkflowSize(WorkflowModel workflow, long sizeBytes, long limitBytes) {
-        if (sizeBytes > limitBytes) {
-            getCounter(
-                            "limit_breach",
-                            "limitType",
-                            "WorkflowSize",
-                            "workflowName",
-                            workflow.getWorkflowName())
-                    .increment();
+        if (!sizeLimitMetricsEnabled) {
+            return;
+        }
+        try {
+            String workflowName = StringUtils.defaultIfBlank(workflow.getWorkflowName(), "unknown");
+            distributionSummary(WORKFLOW_SIZE_BYTES, "workflowName", workflowName).record(sizeBytes);
+            distributionSummary(WORKFLOW_SIZE_RATIO, "workflowName", workflowName)
+                    .record(sizeRatio(sizeBytes, limitBytes));
+            if (sizeBytes > limitBytes) {
+                getCounter(
+                                "limit_breach",
+                                "limitType",
+                                "WorkflowSize",
+                                "workflowName",
+                                workflowName)
+                        .increment();
+            }
+        } catch (Exception e) {
+            log.debug("Failed to emit workflow size metric: {}", e.getMessage());
         }
     }
 
@@ -560,6 +591,30 @@ public class Monitors {
 
     public static void setSkipLabels(boolean value) {
         skipLabels = value;
+    }
+
+    // --- Payload-size limit metrics ---
+    // Pre-breach observability: operators alert on `*_size_ratio_max > 0.7` before a hard breach.
+    // Summaries expose only _count/_sum/_max (no percentiles) so they are cheap and aggregatable
+    // across replicas. Gated by sizeLimitMetricsEnabled (default off) because it runs on the hot
+    // persist path; emission is wrapped so a metrics failure never affects persistence.
+    public static final String TASK_SIZE_BYTES = "task_size_bytes";
+    public static final String TASK_SIZE_RATIO = "task_size_ratio";
+    public static final String WORKFLOW_SIZE_BYTES = "workflow_size_bytes";
+    public static final String WORKFLOW_SIZE_RATIO = "workflow_size_ratio";
+
+    private static volatile boolean sizeLimitMetricsEnabled = false;
+
+    public static boolean isSizeLimitMetricsEnabled() {
+        return sizeLimitMetricsEnabled;
+    }
+
+    public static void setSizeLimitMetricsEnabled(boolean value) {
+        sizeLimitMetricsEnabled = value;
+    }
+
+    private static double sizeRatio(long sizeBytes, long limitBytes) {
+        return limitBytes > 0 ? (double) sizeBytes / limitBytes : 0.0;
     }
 
     public static void recordTaskCreated(TaskModel task) {
