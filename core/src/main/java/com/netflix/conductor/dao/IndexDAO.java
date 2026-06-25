@@ -99,6 +99,24 @@ public interface IndexDAO {
             String query, String freeText, int start, int count, List<String> sort);
 
     /**
+     * Search for tasks, returning full {@link com.netflix.conductor.model.TaskModel} results.
+     * Extension seam: implementations that maintain a task-model index may override this; the
+     * default is unsupported.
+     *
+     * @param query SQL like query for task search parameters.
+     * @param freeText Additional query in free text. Lucene syntax
+     * @param start start index for pagination
+     * @param count # of tasks to be returned
+     * @param sort sort options
+     * @return search result of matching tasks
+     */
+    default SearchResult<com.netflix.conductor.model.TaskModel> searchTask(
+            String query, String freeText, int start, int count, List<String> sort) {
+        throw new UnsupportedOperationException(
+                "searchTask is not supported by this IndexDAO implementation");
+    }
+
+    /**
      * Remove the workflow index
      *
      * @param workflowId workflow to be removed

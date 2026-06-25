@@ -14,6 +14,7 @@ package com.netflix.conductor.metrics;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -563,6 +564,17 @@ public class Monitors {
 
     public static void recordTaskCreated(TaskModel task) {
         getCounter("task_created_count", "taskType", task.getTaskType()).increment();
+    }
+
+    public static void recordWorkflowStart(WorkflowModel workflow, Duration startLatency) {
+        getTimer("workflow_start_request", "workflowName", workflow.getWorkflowName())
+                .record(startLatency);
+    }
+
+    public static void recordWorkflowComplete(WorkflowModel workflow) {
+        long duration = Math.max(0, workflow.getEndTime() - workflow.getCreateTime());
+        getTimer("workflow_completed", "workflowName", workflow.getWorkflowName())
+                .record(duration, TimeUnit.MILLISECONDS);
     }
 
     public static void recordTaskStartCount(TaskModel task) {

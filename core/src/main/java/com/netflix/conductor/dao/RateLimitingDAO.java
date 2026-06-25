@@ -12,6 +12,10 @@
  */
 package com.netflix.conductor.dao;
 
+import java.util.Optional;
+
+import org.apache.commons.lang3.tuple.ImmutablePair;
+
 import com.netflix.conductor.common.metadata.tasks.TaskDef;
 import com.netflix.conductor.model.TaskModel;
 
@@ -27,4 +31,37 @@ public interface RateLimitingDAO {
      *     rateLimited
      */
     boolean exceedsRateLimitPerFrequency(TaskModel task, TaskDef taskDef);
+
+    /**
+     * Computes how long (in seconds) a task should be postponed so that it lands in the next rate
+     * limit bucket, based on the task/{@link TaskDef} rate limit configuration.
+     *
+     * @param task the task being evaluated
+     * @param taskDef the task definition (may be null, in which case the task's own rate limit
+     *     settings are used)
+     * @return the postpone duration in seconds, or {@code 0} if the task is not rate limited
+     */
+    static long getPostponeDurationForTask(TaskModel task, TaskDef taskDef) {
+        ImmutablePair<Integer, Integer> rateLimitPair =
+                Optional.ofNullable(taskDef)
+                        .map(
+                                definition ->
+                                        new ImmutablePair<>(
+                                                definition.getRateLimitPerFrequency(),
+                                                definition.getRateLimitFrequencyInSeconds()))
+                        .orElse(
+                                new ImmutablePair<>(
+                                        task.getRateLimitPerFrequency(),
+                                        task.getRateLimitFrequencyInSeconds()));
+
+        int rateLimitPerFrequency = rateLimitPair.getLeft();
+        int rateLimitFrequencyInSeconds = rateLimitPair.getRight();
+        if (rateLimitPerFrequency > 0 && rateLimitFrequencyInSeconds > 0) {
+            long currentTimeEpoch = System.currentTimeMillis() / 1000L;
+            long currentTimeEpochRateLimitBucket =
+                    (currentTimeEpoch / rateLimitFrequencyInSeconds) + 1L;
+            return currentTimeEpochRateLimitBucket * rateLimitFrequencyInSeconds - currentTimeEpoch;
+        }
+        return 0L;
+    }
 }

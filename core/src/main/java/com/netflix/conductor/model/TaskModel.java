@@ -185,6 +185,12 @@ public class TaskModel {
      */
     private boolean subworkflowChanged;
 
+    /**
+     * Optional sink that an enterprise status listener may use to route status change notifications
+     * for this task. OSS treats it as opaque metadata.
+     */
+    private String statusListenerSink;
+
     /** Id of the parent task when *this* task is an event associated with the task */
     private String parentTaskId;
 
@@ -620,6 +626,14 @@ public class TaskModel {
 
     public void setSubworkflowChanged(boolean subworkflowChanged) {
         this.subworkflowChanged = subworkflowChanged;
+    }
+
+    public String getStatusListenerSink() {
+        return statusListenerSink;
+    }
+
+    public void setStatusListenerSink(String statusListenerSink) {
+        this.statusListenerSink = statusListenerSink;
     }
 
     public void incrementPollCount() {

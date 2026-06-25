@@ -38,6 +38,8 @@ public class StartWorkflowInput {
     private String idempotencyKey;
     private IdempotencyStrategy idempotencyStrategy;
     private WorkflowConsistency workflowConsistency = WorkflowConsistency.DURABLE;
+    private String createdBy;
+    private Map<String, com.netflix.conductor.model.WorkflowNotifications> notifications;
 
     public StartWorkflowInput() {}
 
@@ -179,6 +181,23 @@ public class StartWorkflowInput {
 
     public void setWorkflowConsistency(WorkflowConsistency workflowConsistency) {
         this.workflowConsistency = workflowConsistency;
+    }
+
+    public String getCreatedBy() {
+        return createdBy;
+    }
+
+    public void setCreatedBy(String createdBy) {
+        this.createdBy = createdBy;
+    }
+
+    public Map<String, com.netflix.conductor.model.WorkflowNotifications> getNotifications() {
+        return notifications;
+    }
+
+    public void setNotifications(
+            Map<String, com.netflix.conductor.model.WorkflowNotifications> notifications) {
+        this.notifications = notifications;
     }
 
     @Override

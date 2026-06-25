@@ -563,6 +563,48 @@ public class ConductorProperties {
         this.eventQueueLongPollTimeout = eventQueueLongPollTimeout;
     }
 
+    // --- Engine executor / sync system-task tuning (backported from Orkes) ---
+
+    private int taskUpdateExecutorThreadCount = Runtime.getRuntime().availableProcessors() * 8;
+
+    private int workflowStartExecutorThreadCount = Runtime.getRuntime().availableProcessors() * 8;
+
+    private int syncSystemTaskMaxCallbackAfterSeconds = 5;
+
+    private boolean honorSyncSystemTaskCallbackAfter = false;
+
+    public int getTaskUpdateExecutorThreadCount() {
+        return taskUpdateExecutorThreadCount;
+    }
+
+    public void setTaskUpdateExecutorThreadCount(int taskUpdateExecutorThreadCount) {
+        this.taskUpdateExecutorThreadCount = taskUpdateExecutorThreadCount;
+    }
+
+    public int getWorkflowStartExecutorThreadCount() {
+        return workflowStartExecutorThreadCount;
+    }
+
+    public void setWorkflowStartExecutorThreadCount(int workflowStartExecutorThreadCount) {
+        this.workflowStartExecutorThreadCount = workflowStartExecutorThreadCount;
+    }
+
+    public int getSyncSystemTaskMaxCallbackAfterSeconds() {
+        return syncSystemTaskMaxCallbackAfterSeconds;
+    }
+
+    public void setSyncSystemTaskMaxCallbackAfterSeconds(int syncSystemTaskMaxCallbackAfterSeconds) {
+        this.syncSystemTaskMaxCallbackAfterSeconds = syncSystemTaskMaxCallbackAfterSeconds;
+    }
+
+    public boolean isHonorSyncSystemTaskCallbackAfter() {
+        return honorSyncSystemTaskCallbackAfter;
+    }
+
+    public void setHonorSyncSystemTaskCallbackAfter(boolean honorSyncSystemTaskCallbackAfter) {
+        this.honorSyncSystemTaskCallbackAfter = honorSyncSystemTaskCallbackAfter;
+    }
+
     public DataSize getWorkflowInputPayloadSizeThreshold() {
         return workflowInputPayloadSizeThreshold;
     }

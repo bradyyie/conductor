@@ -17,6 +17,7 @@ import java.util.List;
 import com.netflix.conductor.common.metadata.tasks.TaskResult;
 import com.netflix.conductor.common.metadata.workflow.RerunWorkflowRequest;
 import com.netflix.conductor.common.metadata.workflow.SkipTaskRequest;
+import com.netflix.conductor.common.metadata.workflow.UpgradeWorkflowRequest;
 import com.netflix.conductor.common.run.Workflow;
 import com.netflix.conductor.core.exception.ConflictException;
 import com.netflix.conductor.core.exception.NotFoundException;
@@ -183,4 +184,19 @@ public interface WorkflowExecutor {
      * @return created or existing workflow model
      */
     WorkflowModel startWorkflowIdempotent(StartWorkflowInput input);
+
+    /**
+     * Upgrades a running workflow to a new version of its definition. Extension seam: the default
+     * OSS engine does not support live upgrades; implementations that do (e.g. enterprise) override
+     * this.
+     *
+     * @param workflowId the id of the running workflow to upgrade
+     * @param upgradeWorkflowRequest the upgrade request describing the target version and any
+     *     task/input remapping
+     */
+    default void upgradeRunningWorkflowToVersion(
+            String workflowId, UpgradeWorkflowRequest upgradeWorkflowRequest) {
+        throw new UnsupportedOperationException(
+                "Upgrading a running workflow to a new version is not supported by this WorkflowExecutor implementation");
+    }
 }

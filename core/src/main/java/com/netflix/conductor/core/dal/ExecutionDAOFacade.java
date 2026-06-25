@@ -271,17 +271,65 @@ public class ExecutionDAOFacade {
         externalizeWorkflowData(workflowModel);
         executionDAO.createWorkflow(workflowModel);
         // Add to decider queue
-        queueDAO.push(
-                DECIDER_QUEUE,
-                workflowModel.getWorkflowId(),
-                workflowModel.getPriority(),
-                properties.getWorkflowOffsetTimeout().getSeconds());
+        pushToDeciderQueue(workflowModel);
         if (properties.isAsyncIndexingEnabled()) {
             indexDAO.asyncIndexWorkflow(new WorkflowSummary(workflowModel.toWorkflow()));
         } else {
             indexDAO.indexWorkflow(new WorkflowSummary(workflowModel.toWorkflow()));
         }
         return workflowModel.getWorkflowId();
+    }
+
+    /**
+     * Persists the workflow without scheduling it on the decider queue or indexing it. Extension
+     * seam: enterprise overrides may add additional behaviour (e.g. change-data-capture).
+     *
+     * @param workflow the workflow to persist
+     * @return the id of the created workflow
+     */
+    public String createOnly(WorkflowModel workflow) {
+        externalizeWorkflowData(workflow);
+        executionDAO.createWorkflow(workflow);
+        return workflow.getWorkflowId();
+    }
+
+    /**
+     * Schedules the workflow for evaluation on the decider queue. Extension seam: enterprise
+     * overrides may customise scheduling.
+     */
+    protected void pushToDeciderQueue(WorkflowModel workflowModel) {
+        queueDAO.push(
+                DECIDER_QUEUE,
+                workflowModel.getWorkflowId(),
+                workflowModel.getPriority(),
+                properties.getWorkflowOffsetTimeout().getSeconds());
+    }
+
+    /** Removes the workflow from the decider queue. Extension seam for enterprise overrides. */
+    protected void removeFromDeciderQueue(WorkflowModel workflowModel) {
+        try {
+            queueDAO.remove(DECIDER_QUEUE, workflowModel.getWorkflowId());
+        } catch (Exception e) {
+            LOGGER.info(
+                    "Error removing workflow: {} from decider queue",
+                    workflowModel.getWorkflowId(),
+                    e);
+        }
+    }
+
+    /** Removes any event bookkeeping associated with a task. Extension seam for enterprise. */
+    public void removeEventTask(TaskModel task) {
+        executionDAO.removeEventTask(task);
+    }
+
+    /**
+     * Publishes task status change notifications. Extension seam: OSS performs no notification;
+     * enterprise overrides (e.g. change-data-capture) publish to an external sink.
+     *
+     * @param tasks the tasks whose status changed
+     */
+    public void sendTaskStatusChange(List<TaskModel> tasks) {
+        // no-op in OSS; enterprise overrides publish status changes
     }
 
     private void externalizeTaskData(TaskModel taskModel) {
@@ -844,6 +892,10 @@ public class ExecutionDAOFacade {
 
     public java.util.Map<String, Long> getRunningWorkflowCountByName() {
         return executionDAO.getRunningWorkflowCountByName();
+    }
+
+    public java.util.Map<String, Long> getRunningWorkflowCountByName(int maxNames) {
+        return executionDAO.getRunningWorkflowCountByName(maxNames);
     }
 
     public java.util.Map<String, Long> getInProgressTaskCountByName(int maxNames) {
