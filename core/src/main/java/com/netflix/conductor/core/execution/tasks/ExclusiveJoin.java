@@ -126,6 +126,11 @@ public class ExclusiveJoin extends WorkflowSystemTask {
                 task.setReasonForIncompletion(failureReason.toString());
                 task.setStatus(TaskModel.Status.FAILED);
             } else {
+                // Reload the joined task so its full output payload is present before copying it
+                // to this exclusive join's output. The in-memory TaskModel may carry only a
+                // reference to externalized output (or a partially-populated payload); fetching it
+                // via the executor guarantees the complete output is propagated.
+                exclusiveTask = workflowExecutor.getTask(exclusiveTask.getTaskId());
                 task.setOutputData(exclusiveTask.getOutputData());
                 task.setStatus(TaskModel.Status.COMPLETED);
             }
