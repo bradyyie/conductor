@@ -197,6 +197,36 @@ class SqlBuilderSeamTest {
     }
 
     @Test
+    void writeSeam_extendConflictTargetOnlyAppliesWhenTargetExists() {
+        // Upsert with an explicit conflict target: org_id is appended to the natural key.
+        SqlInsertBuilder upsert =
+                SqlInsertBuilder.create()
+                        .into("workflow_to_task")
+                        .column("workflow_id", "w1")
+                        .column("task_id", "t1")
+                        .onConflict("workflow_id", "task_id")
+                        .onConflictDoNothing();
+        upsert.column("org_id", "acme").extendConflictTarget("org_id");
+        assertEquals(
+                "INSERT INTO workflow_to_task (workflow_id, task_id, org_id) VALUES (?, ?, ?) "
+                        + "ON CONFLICT (workflow_id, task_id, org_id) DO NOTHING",
+                upsert.toSql());
+
+        // Plain insert (no conflict target): extendConflictTarget is a no-op — no bogus ON CONFLICT.
+        SqlInsertBuilder plain =
+                SqlInsertBuilder.create()
+                        .into("task_in_progress")
+                        .column("task_def_name", "td")
+                        .column("task_id", "t1")
+                        .column("workflow_id", "w1");
+        plain.column("org_id", "acme").extendConflictTarget("org_id");
+        assertEquals(
+                "INSERT INTO task_in_progress (task_def_name, task_id, workflow_id, org_id) "
+                        + "VALUES (?, ?, ?, ?)",
+                plain.toSql());
+    }
+
+    @Test
     void writeSeam_ossOnlyHasNoOrgConcept() {
         // With no decorator (OSS running standalone), the insert is unchanged.
         SqlInsertBuilder ib =

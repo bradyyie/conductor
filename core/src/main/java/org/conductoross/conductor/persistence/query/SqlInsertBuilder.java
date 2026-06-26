@@ -112,6 +112,20 @@ public final class SqlInsertBuilder {
     }
 
     /**
+     * Composing seam for subclasses: adds columns to the conflict target ONLY when the adapter has
+     * already declared an explicit conflict target (a non-empty {@link #onConflict}). For a plain
+     * insert (no conflict target) or a target-less {@link #onConflictDoNothing}, this is a no-op — so
+     * an enterprise {@code applyWriteExtensions} can append {@code org_id} to the natural key of an
+     * upsert without accidentally turning a plain insert into an {@code ON CONFLICT (org_id) …}.
+     */
+    public SqlInsertBuilder extendConflictTarget(String... columns) {
+        if (!conflictTargets.isEmpty()) {
+            onConflict(columns);
+        }
+        return this;
+    }
+
+    /**
      * {@code ON CONFLICT (...) DO UPDATE SET} assignments. Each may contain {@code :name} markers.
      */
     public SqlInsertBuilder doUpdateSet(String... assignments) {
