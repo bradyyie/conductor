@@ -762,7 +762,21 @@ Repeated the `extends`-OSS pattern across the engine DAOs and assessed each:
 - **`PostgresQueueDAO` — poor reparent candidate (skipped).** Diverges from OSS beyond `org_id`: `priority ASC` vs OSS `DESC` (different priority semantics), `popMessages` re-stamps `deliver_on` (visibility-timeout-on-pop), an org-keyed `queueCache`, millisecond (not second) intervals, `getSize` is cross-org, and extra enterprise methods (`push(…Duration)`, `get`, `setQueueUnackTime`). Reparenting would be ~90% full overrides for a ~3-method dedup — net-negative. Stays standalone.
 - **`AbstractMetadataDAO`/`OrkesPgMetadataDAO` — partial-only.** Basic `meta_task_def`/`meta_workflow_def` CRUD is OSS + `org_id`, but the **upsert strategy diverges** (Orkes `INSERT … ON CONFLICT (org_id,name) DO UPDATE` vs OSS update-then-insert) and it carries enterprise RBAC-aware queries (`getWorkflowDefs(name,subjects,accesses)`, resource-sharing joins) via `OrkesMetadataDAO`. A reparent would dedup a little and override a lot — defer.
 
-**Conclusion:** the clean OSS-adapter *collapse* wins are PollData (done) + ExecutionDAO's mapping/in-progress/scheduled subset (done). Queue/Metadata and the enterprise feature stores diverge enough that the **remaining persistence-convergence value is Phase 4 (the monolith split / 13 sideways edges → zero)**, not more reparenting. Phase 4 needs a base-persistence-module extraction (`PostgresBaseDAO`/`Query`/DataSource config → a small `postgres-base` module) so the feature stores (`PostgresGatewayConfigDAO`→gateway, `PostgresHumanTaskDAO`→human, …) can move to their feature modules and depend on `postgres-base` instead of the monolith depending on them. **Also still open:** `OrkesWorkflowExecutor extends WorkflowExecutorOps` (needs the sync-exec/idempotency engine-core backport).
+**Conclusion:** the clean OSS-adapter *collapse* wins are PollData (done) + ExecutionDAO's mapping/in-progress/scheduled subset (done). Queue/Metadata and the enterprise feature stores diverge enough that the **remaining persistence-convergence value is Phase 4 (the monolith split / 13 sideways edges → zero)**, not more reparenting.
+
+### Phase 4 — monolith split: base modules + gateway & human features done ✅ (13 → 9 sideways edges)
+The recipe (proven on two features, both DBs):
+1. **Foundation base modules extracted** (one-time, done): `orkes-conductor-postgres-base` (`PostgresBaseDAO` + `Query` + functional interfaces) and `orkes-conductor-mysql-base` (`OrkesBaseDAO`, which extends the OSS `MySQLBaseDAO`). Same packages → zero import churn; added to the `moduleDependencyReport` `foundation` set; exposed via `api` (incl. spring-retry — `RetryTemplate` is in the base-DAO ctor). The persistence monoliths now expose `*-base` via `api` so existing consumers still see `PostgresBaseDAO`/`Query`.
+2. **Per-feature store move:** for each feature edge, move the Postgres + MySQL store(s) (and any feature-only helper, e.g. gateway's `OrgFilterHelper`) from the persistence monolith into the **feature module**; the feature module gains an `implementation project(':orkes-conductor-{postgres,mysql}-base')` dep; drop the monolith's `implementation project(':orkes-conductor-<feature>')` production edge. SQL unchanged — pure relocation. The feature's DAO test stays in the persistence module via a **test-scope** dep on the feature (test edges aren't violations).
+
+Done:
+- **gateway ✅** — `Postgres/MySQLGatewayConfigDAO` (+ `OrgFilterHelper`) → `api-gateway`; both `→ api-gateway` edges gone (13→11). `PostgresGatewayConfigDAOTest` 26/0, `MySQLGatewayConfigDAOTest` 11/0.
+- **human ✅** — `Postgres/MySQLHumanTaskDAO` + `*TemplateDAO` → `human` (uses `io.orkes.conductor.model.*` locally); both `→ human` edges gone (11→9). `MySQLHumanTaskTemplateDAOTest` 10/0.
+- Whole Orkes project `compileJava` + `compileTestJava` 0 errors after each.
+
+**Remaining 9:** persistence → {api-orchestration (registry stores), integration (6 DAOs each — the big one), scheduler-enterprise (incl. the archive-entangled `PostgresSchedulerArchiveDAO`)} = 6 edges via the same recipe; plus **3 feature-to-feature** edges (`api-gateway`/`event-integration`/`event-processor` → `integration`/`event-integration`) — a separate category (likely intended collaboration; needs a product call, since "ports stay with features" and `api-gateway-api` was reverted).
+
+**Also still open:** `OrkesWorkflowExecutor extends WorkflowExecutorOps` (needs the sync-exec/idempotency engine-core backport).
 
 ---
 
