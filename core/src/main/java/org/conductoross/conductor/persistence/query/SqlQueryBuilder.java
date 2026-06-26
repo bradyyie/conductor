@@ -39,7 +39,24 @@ public final class SqlQueryBuilder {
 
     private static final Pattern NAMED_PARAM = Pattern.compile(":([a-zA-Z_][a-zA-Z0-9_]*)");
 
-    private final StringBuilder sql = new StringBuilder();
+    /**
+     * Statement head: {@code SELECT ... FROM ...} (incl. joins), or an {@code UPDATE}/{@code
+     * DELETE} head.
+     */
+    private final StringBuilder head = new StringBuilder();
+
+    /**
+     * {@code WHERE} predicates, AND-joined. This list is the seam: {@link #where}/{@link #and}
+     * append here.
+     */
+    private final List<String> wherePredicates = new ArrayList<>();
+
+    /**
+     * Trailing clauses ({@code ORDER BY}/{@code LIMIT}/locking) — always rendered AFTER the {@code
+     * WHERE}.
+     */
+    private final StringBuilder tail = new StringBuilder();
+
     private final Map<String, Object> binds = new HashMap<>();
 
     public static SqlQueryBuilder create() {
@@ -47,39 +64,57 @@ public final class SqlQueryBuilder {
     }
 
     public SqlQueryBuilder select(String... columns) {
-        sql.append("SELECT ").append(String.join(", ", columns));
+        head.append("SELECT ").append(String.join(", ", columns));
         return this;
     }
 
     public SqlQueryBuilder from(String table) {
-        sql.append(" FROM ").append(table);
+        head.append(" FROM ").append(table);
         return this;
     }
 
     public SqlQueryBuilder where(String predicate) {
-        sql.append(" WHERE ").append(predicate);
+        wherePredicates.add(predicate);
         return this;
     }
 
-    /** Appends an {@code AND <predicate>}. This is the primary seam for adding a filter. */
+    /**
+     * Appends a {@code WHERE} predicate (AND-joined). This is the primary seam for adding a filter:
+     * predicates are collected and rendered together inside the {@code WHERE} clause, so a
+     * predicate appended here always lands before any trailing {@code ORDER BY}/{@code
+     * LIMIT}/locking clause.
+     */
     public SqlQueryBuilder and(String predicate) {
-        sql.append(" AND ").append(predicate);
+        wherePredicates.add(predicate);
         return this;
     }
 
     public SqlQueryBuilder orderBy(String... columns) {
-        sql.append(" ORDER BY ").append(String.join(", ", columns));
+        tail.append(" ORDER BY ").append(String.join(", ", columns));
         return this;
     }
 
     public SqlQueryBuilder limit(int count) {
-        sql.append(" LIMIT ").append(count);
+        tail.append(" LIMIT ").append(count);
         return this;
     }
 
-    /** Appends a raw SQL fragment verbatim (may contain {@code :name} markers). */
+    /**
+     * Appends a trailing clause rendered after {@code WHERE}/{@code ORDER BY}/{@code LIMIT} — e.g.
+     * a row-locking clause such as {@code FOR UPDATE SKIP LOCKED} or {@code FOR SHARE}.
+     */
+    public SqlQueryBuilder trailing(String clause) {
+        tail.append(" ").append(clause);
+        return this;
+    }
+
+    /**
+     * Appends a raw SQL fragment verbatim to the statement head (before {@code WHERE}), e.g. an
+     * {@code UPDATE t SET ...}/{@code DELETE FROM t} head or a join. May contain {@code :name}
+     * markers.
+     */
     public SqlQueryBuilder raw(String fragment) {
-        sql.append(fragment);
+        head.append(fragment);
         return this;
     }
 
@@ -95,7 +130,13 @@ public final class SqlQueryBuilder {
     public record Rendered(String sql, List<Object> binds) {}
 
     public Rendered render() {
-        Matcher matcher = NAMED_PARAM.matcher(sql);
+        StringBuilder assembled = new StringBuilder(head);
+        if (!wherePredicates.isEmpty()) {
+            assembled.append(" WHERE ").append(String.join(" AND ", wherePredicates));
+        }
+        assembled.append(tail);
+
+        Matcher matcher = NAMED_PARAM.matcher(assembled);
         StringBuilder rendered = new StringBuilder();
         List<Object> positional = new ArrayList<>();
         while (matcher.find()) {

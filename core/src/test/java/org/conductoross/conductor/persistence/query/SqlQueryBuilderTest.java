@@ -69,6 +69,26 @@ public class SqlQueryBuilderTest {
     }
 
     @Test
+    public void trailingClausesRenderAfterWherePredicates() {
+        SqlQueryBuilder query =
+                SqlQueryBuilder.create()
+                        .select("task_id")
+                        .from("task_in_progress")
+                        .where("task_def_name = :name")
+                        .orderBy("created_on")
+                        .limit(5)
+                        .bind("name", "myTask");
+        // A predicate appended after orderBy/limit (as the extension hook does) still lands in
+        // WHERE.
+        query.and("org_id = :orgId").bind("orgId", "0000");
+
+        assertEquals(
+                "SELECT task_id FROM task_in_progress WHERE task_def_name = ? AND org_id = ? ORDER BY created_on LIMIT 5",
+                query.toSql());
+        assertEquals(List.of("myTask", "0000"), query.binds());
+    }
+
+    @Test
     public void repeatedNamedParamEmitsValuePerOccurrence() {
         SqlQueryBuilder query =
                 SqlQueryBuilder.create().raw("SELECT * FROM s WHERE a = :v OR b = :v").bind("v", 7);

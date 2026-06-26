@@ -23,16 +23,15 @@ import java.util.function.Consumer;
 
 import javax.sql.DataSource;
 
+import org.conductoross.conductor.persistence.query.QueryContext;
+import org.conductoross.conductor.persistence.query.SqlInsertBuilder;
+import org.conductoross.conductor.persistence.query.SqlQueryBuilder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.retry.support.RetryTemplate;
 
 import com.netflix.conductor.core.exception.NonTransientException;
 import com.netflix.conductor.postgres.util.*;
-
-import org.conductoross.conductor.persistence.query.QueryContext;
-import org.conductoross.conductor.persistence.query.SqlInsertBuilder;
-import org.conductoross.conductor.persistence.query.SqlQueryBuilder;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -292,13 +291,28 @@ public abstract class PostgresBaseDAO {
         applyQueryExtensions(builder, context);
         SqlQueryBuilder.Rendered rendered = builder.render();
         return query(
-                tx, rendered.sql(), q -> function.apply(q.addParameters(rendered.binds().toArray())));
+                tx,
+                rendered.sql(),
+                q -> function.apply(q.addParameters(rendered.binds().toArray())));
     }
 
-    /** Transactional variant of {@link #query(Connection, SqlQueryBuilder, QueryContext, QueryFunction)}. */
+    /**
+     * Transactional variant of {@link #query(Connection, SqlQueryBuilder, QueryContext,
+     * QueryFunction)}.
+     */
     protected <R> R queryWithTransaction(
             SqlQueryBuilder builder, QueryContext context, QueryFunction<R> function) {
         return getWithRetriedTransactions(tx -> query(tx, builder, context, function));
+    }
+
+    /**
+     * Builds and runs an {@code UPDATE}/{@code DELETE} through {@link SqlQueryBuilder}, invoking
+     * {@link #applyQueryExtensions(SqlQueryBuilder, QueryContext)} immediately before render so a
+     * subclass can scope the {@code WHERE} (e.g. append {@code org_id}). Returns the affected row
+     * count.
+     */
+    protected int execute(Connection tx, SqlQueryBuilder builder, QueryContext context) {
+        return query(tx, builder, context, q -> q.executeUpdate());
     }
 
     /**

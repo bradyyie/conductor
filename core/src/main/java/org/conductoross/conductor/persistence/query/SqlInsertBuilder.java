@@ -26,18 +26,21 @@ import java.util.Map;
  * target instead of overwriting it.
  *
  * <p>Mirrors {@link SqlQueryBuilder}: a concrete, dependency-free builder so it can live in {@code
- * conductor-core} and be used by every {@code *-persistence} adapter. {@link #render()} emits {@code
- * ?} placeholders and the matching positional bind list (column-insertion order, then
- * {@code DO UPDATE SET} value binds).
+ * conductor-core} and be used by every {@code *-persistence} adapter. {@link #render()} emits
+ * {@code ?} placeholders and the matching positional bind list (column-insertion order, then {@code
+ * DO UPDATE SET} value binds).
  */
 public final class SqlInsertBuilder {
 
     private String table;
-    private final Map<String, Object> columns = new LinkedHashMap<>();
+    private final Map<String, ColumnValue> columns = new LinkedHashMap<>();
     private final List<String> conflictTargets = new ArrayList<>();
     private final List<String> updateAssignments = new ArrayList<>();
     private final List<Object> updateBinds = new ArrayList<>();
     private boolean doNothingOnConflict = false;
+
+    /** A column value: either a positional bind ({@code ?}) or a raw SQL expression. */
+    private record ColumnValue(Object value, boolean raw) {}
 
     public static SqlInsertBuilder create() {
         return new SqlInsertBuilder();
@@ -48,16 +51,28 @@ public final class SqlInsertBuilder {
         return this;
     }
 
-    /** Adds (or replaces) a column value. Enterprise overrides add {@code org_id} here. */
+    /**
+     * Adds (or replaces) a column bound as a positional {@code ?}. Enterprise overrides add {@code
+     * org_id} here.
+     */
     public SqlInsertBuilder column(String name, Object value) {
-        columns.put(name, value);
+        columns.put(name, new ColumnValue(value, false));
+        return this;
+    }
+
+    /**
+     * Adds (or replaces) a column whose VALUE is a raw SQL expression rendered verbatim (no bind),
+     * e.g. {@code columnRaw("modified_on", "CURRENT_TIMESTAMP")}.
+     */
+    public SqlInsertBuilder columnRaw(String name, String sqlExpression) {
+        columns.put(name, new ColumnValue(sqlExpression, true));
         return this;
     }
 
     /**
      * Appends conflict-target columns. Called by the OSS adapter for its natural key, then
-     * (optionally) by an enterprise override to add {@code org_id} — the targets compose rather than
-     * overwrite.
+     * (optionally) by an enterprise override to add {@code org_id} — the targets compose rather
+     * than overwrite.
      */
     public SqlInsertBuilder onConflict(String... targetColumns) {
         for (String c : targetColumns) {
@@ -68,7 +83,9 @@ public final class SqlInsertBuilder {
         return this;
     }
 
-    /** {@code ON CONFLICT (...) DO UPDATE SET} assignments. Each may contain {@code :name} markers. */
+    /**
+     * {@code ON CONFLICT (...) DO UPDATE SET} assignments. Each may contain {@code :name} markers.
+     */
     public SqlInsertBuilder doUpdateSet(String... assignments) {
         for (String a : assignments) {
             updateAssignments.add(a);
@@ -98,12 +115,16 @@ public final class SqlInsertBuilder {
         StringBuilder sql = new StringBuilder("INSERT INTO ").append(table).append(" (");
         sql.append(String.join(", ", columns.keySet())).append(") VALUES (");
         StringBuilder placeholders = new StringBuilder();
-        for (Object value : columns.values()) {
+        for (ColumnValue column : columns.values()) {
             if (placeholders.length() > 0) {
                 placeholders.append(", ");
             }
-            placeholders.append("?");
-            binds.add(value);
+            if (column.raw()) {
+                placeholders.append((String) column.value());
+            } else {
+                placeholders.append("?");
+                binds.add(column.value());
+            }
         }
         sql.append(placeholders).append(")");
         if (!conflictTargets.isEmpty()) {
@@ -114,6 +135,11 @@ public final class SqlInsertBuilder {
                 sql.append(" DO UPDATE SET ").append(String.join(", ", updateAssignments));
                 binds.addAll(updateBinds);
             }
+        } else if (doNothingOnConflict) {
+            // Target-less ON CONFLICT DO NOTHING (e.g. event_execution): fires on any unique
+            // violation. Composes with an enterprise org_id column without needing a conflict
+            // target.
+            sql.append(" ON CONFLICT DO NOTHING");
         }
         return new Rendered(sql.toString(), binds);
     }

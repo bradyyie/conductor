@@ -23,6 +23,9 @@ import java.util.stream.Collectors;
 
 import javax.sql.DataSource;
 
+import org.conductoross.conductor.persistence.query.QueryContext;
+import org.conductoross.conductor.persistence.query.SqlInsertBuilder;
+import org.conductoross.conductor.persistence.query.SqlQueryBuilder;
 import org.springframework.retry.support.RetryTemplate;
 
 import com.netflix.conductor.common.metadata.events.EventExecution;
@@ -37,10 +40,6 @@ import com.netflix.conductor.metrics.Monitors;
 import com.netflix.conductor.model.TaskModel;
 import com.netflix.conductor.model.WorkflowModel;
 import com.netflix.conductor.postgres.util.ExecutorsUtil;
-import com.netflix.conductor.postgres.util.Query;
-
-import org.conductoross.conductor.persistence.query.QueryContext;
-import org.conductoross.conductor.persistence.query.SqlInsertBuilder;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.annotations.VisibleForTesting;
@@ -97,19 +96,20 @@ public class PostgresExecutionDAO extends PostgresBaseDAO
 
     @Override
     public List<TaskModel> getPendingTasksByWorkflow(String taskDefName, String workflowId) {
-        // @formatter:off
-        String GET_IN_PROGRESS_TASKS_FOR_WORKFLOW =
-                "SELECT json_data FROM task_in_progress tip "
-                        + "INNER JOIN task t ON t.task_id = tip.task_id "
-                        + "WHERE task_def_name = ? AND workflow_id = ? FOR SHARE";
-        // @formatter:on
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .select("json_data")
+                        .from("task_in_progress tip INNER JOIN task t ON t.task_id = tip.task_id")
+                        .where("task_def_name = :taskDefName")
+                        .and("workflow_id = :workflowId")
+                        .bind("taskDefName", taskDefName)
+                        .bind("workflowId", workflowId)
+                        .trailing("FOR SHARE");
 
         return queryWithTransaction(
-                GET_IN_PROGRESS_TASKS_FOR_WORKFLOW,
-                q ->
-                        q.addParameter(taskDefName)
-                                .addParameter(workflowId)
-                                .executeAndFetch(TaskModel.class));
+                builder,
+                QueryContext.read("task_in_progress"),
+                q -> q.executeAndFetch(TaskModel.class));
     }
 
     @Override
@@ -281,9 +281,14 @@ public class PostgresExecutionDAO extends PostgresBaseDAO
 
     @Override
     public TaskModel getTask(String taskId) {
-        String GET_TASK = "SELECT json_data FROM task WHERE task_id = ?";
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .select("json_data")
+                        .from("task")
+                        .where("task_id = :taskId")
+                        .bind("taskId", taskId);
         return queryWithTransaction(
-                GET_TASK, q -> q.addParameter(taskId).executeAndFetchFirst(TaskModel.class));
+                builder, QueryContext.read("task"), q -> q.executeAndFetchFirst(TaskModel.class));
     }
 
     @Override
@@ -297,31 +302,37 @@ public class PostgresExecutionDAO extends PostgresBaseDAO
     @Override
     public List<TaskModel> getPendingTasksForTaskType(String taskName) {
         Preconditions.checkNotNull(taskName, "task name cannot be null");
-        // @formatter:off
-        String GET_IN_PROGRESS_TASKS_FOR_TYPE =
-                "SELECT json_data FROM task_in_progress tip "
-                        + "INNER JOIN task t ON t.task_id = tip.task_id "
-                        + "WHERE task_def_name = ? FOR UPDATE SKIP LOCKED";
-        // @formatter:on
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .select("json_data")
+                        .from("task_in_progress tip INNER JOIN task t ON t.task_id = tip.task_id")
+                        .where("task_def_name = :taskName")
+                        .bind("taskName", taskName)
+                        .trailing("FOR UPDATE SKIP LOCKED");
 
         return queryWithTransaction(
-                GET_IN_PROGRESS_TASKS_FOR_TYPE,
-                q -> q.addParameter(taskName).executeAndFetch(TaskModel.class));
+                builder,
+                QueryContext.read("task_in_progress"),
+                q -> q.executeAndFetch(TaskModel.class));
     }
 
     @Override
     public List<TaskModel> getTasksForWorkflow(String workflowId) {
-        String GET_TASKS_FOR_WORKFLOW =
-                "SELECT task_id FROM workflow_to_task WHERE workflow_id = ? FOR SHARE";
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .select("task_id")
+                        .from("workflow_to_task")
+                        .where("workflow_id = :workflowId")
+                        .bind("workflowId", workflowId)
+                        .trailing("FOR SHARE");
         return getWithRetriedTransactions(
                 tx ->
                         query(
                                 tx,
-                                GET_TASKS_FOR_WORKFLOW,
+                                builder,
+                                QueryContext.read("workflow_to_task"),
                                 q -> {
-                                    List<String> taskIds =
-                                            q.addParameter(workflowId)
-                                                    .executeScalarList(String.class);
+                                    List<String> taskIds = q.executeScalarList(String.class);
                                     return getTasks(tx, taskIds);
                                 }));
     }
@@ -408,12 +419,18 @@ public class PostgresExecutionDAO extends PostgresBaseDAO
     @Override
     public List<String> getRunningWorkflowIds(String workflowName, int version) {
         Preconditions.checkNotNull(workflowName, "workflowName cannot be null");
-        String GET_PENDING_WORKFLOW_IDS =
-                "SELECT workflow_id FROM workflow_pending WHERE workflow_type = ? FOR SHARE SKIP LOCKED";
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .select("workflow_id")
+                        .from("workflow_pending")
+                        .where("workflow_type = :workflowName")
+                        .bind("workflowName", workflowName)
+                        .trailing("FOR SHARE SKIP LOCKED");
 
         return queryWithTransaction(
-                GET_PENDING_WORKFLOW_IDS,
-                q -> q.addParameter(workflowName).executeScalarList(String.class));
+                builder,
+                QueryContext.read("workflow_pending"),
+                q -> q.executeScalarList(String.class));
     }
 
     /**
@@ -433,20 +450,29 @@ public class PostgresExecutionDAO extends PostgresBaseDAO
     @Override
     public long getPendingWorkflowCount(String workflowName) {
         Preconditions.checkNotNull(workflowName, "workflowName cannot be null");
-        String GET_PENDING_WORKFLOW_COUNT =
-                "SELECT COUNT(*) FROM workflow_pending WHERE workflow_type = ?";
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .select("COUNT(*)")
+                        .from("workflow_pending")
+                        .where("workflow_type = :workflowName")
+                        .bind("workflowName", workflowName);
 
         return queryWithTransaction(
-                GET_PENDING_WORKFLOW_COUNT, q -> q.addParameter(workflowName).executeCount());
+                builder, QueryContext.read("workflow_pending"), q -> q.executeCount());
     }
 
     @Override
     public long getInProgressTaskCount(String taskDefName) {
-        String GET_IN_PROGRESS_TASK_COUNT =
-                "SELECT COUNT(*) FROM task_in_progress WHERE task_def_name = ? AND in_progress_status = true";
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .select("COUNT(*)")
+                        .from("task_in_progress")
+                        .where("task_def_name = :taskDefName")
+                        .and("in_progress_status = true")
+                        .bind("taskDefName", taskDefName);
 
         return queryWithTransaction(
-                GET_IN_PROGRESS_TASK_COUNT, q -> q.addParameter(taskDefName).executeCount());
+                builder, QueryContext.read("task_in_progress"), q -> q.executeCount());
     }
 
     @Override
@@ -460,21 +486,23 @@ public class PostgresExecutionDAO extends PostgresBaseDAO
 
         withTransaction(
                 tx -> {
-                    // @formatter:off
-                    String GET_ALL_WORKFLOWS_FOR_WORKFLOW_DEF =
-                            "SELECT workflow_id FROM workflow_def_to_workflow "
-                                    + "WHERE workflow_def = ? AND date_str BETWEEN ? AND ? FOR SHARE SKIP LOCKED";
-                    // @formatter:on
+                    SqlQueryBuilder builder =
+                            SqlQueryBuilder.create()
+                                    .select("workflow_id")
+                                    .from("workflow_def_to_workflow")
+                                    .where("workflow_def = :workflowName")
+                                    .and("date_str BETWEEN :startDate AND :endDate")
+                                    .bind("workflowName", workflowName)
+                                    .bind("startDate", dateStr(startTime))
+                                    .bind("endDate", dateStr(endTime))
+                                    .trailing("FOR SHARE SKIP LOCKED");
 
                     List<String> workflowIds =
                             query(
                                     tx,
-                                    GET_ALL_WORKFLOWS_FOR_WORKFLOW_DEF,
-                                    q ->
-                                            q.addParameter(workflowName)
-                                                    .addParameter(dateStr(startTime))
-                                                    .addParameter(dateStr(endTime))
-                                                    .executeScalarList(String.class));
+                                    builder,
+                                    QueryContext.read("workflow_def_to_workflow"),
+                                    q -> q.executeScalarList(String.class));
                     workflowIds.forEach(
                             workflowId -> {
                                 try {
@@ -500,15 +528,21 @@ public class PostgresExecutionDAO extends PostgresBaseDAO
     public List<WorkflowModel> getWorkflowsByCorrelationId(
             String workflowName, String correlationId, boolean includeTasks) {
         Preconditions.checkNotNull(correlationId, "correlationId cannot be null");
-        String GET_WORKFLOWS_BY_CORRELATION_ID =
-                "SELECT w.json_data FROM workflow w left join workflow_def_to_workflow wd on w.workflow_id = wd.workflow_id  WHERE w.correlation_id = ? and wd.workflow_def = ? FOR SHARE SKIP LOCKED";
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .select("w.json_data")
+                        .from(
+                                "workflow w left join workflow_def_to_workflow wd on w.workflow_id = wd.workflow_id")
+                        .where("w.correlation_id = :correlationId")
+                        .and("wd.workflow_def = :workflowName")
+                        .bind("correlationId", correlationId)
+                        .bind("workflowName", workflowName)
+                        .trailing("FOR SHARE SKIP LOCKED");
 
         return queryWithTransaction(
-                GET_WORKFLOWS_BY_CORRELATION_ID,
-                q ->
-                        q.addParameter(correlationId)
-                                .addParameter(workflowName)
-                                .executeAndFetch(WorkflowModel.class));
+                builder,
+                QueryContext.read("workflow"),
+                q -> q.executeAndFetch(WorkflowModel.class));
     }
 
     @Override
@@ -586,17 +620,23 @@ public class PostgresExecutionDAO extends PostgresBaseDAO
             return Lists.newArrayList();
         }
 
-        // Generate a formatted query string with a variable number of bind params based
-        // on taskIds.size()
-        final String GET_TASKS_FOR_IDS =
-                String.format(
-                        "SELECT json_data FROM task WHERE task_id IN (%s) AND json_data IS NOT NULL",
-                        Query.generateInBindings(taskIds.size()));
+        // Build a variable-length IN clause using named markers so the binds stay positional and
+        // the applyQueryExtensions hook can still scope the WHERE.
+        SqlQueryBuilder builder = SqlQueryBuilder.create().select("json_data").from("task");
+        List<String> markers = new ArrayList<>(taskIds.size());
+        for (int i = 0; i < taskIds.size(); i++) {
+            String name = "taskId" + i;
+            markers.add(":" + name);
+            builder.bind(name, taskIds.get(i));
+        }
+        builder.where("task_id IN (" + String.join(", ", markers) + ")")
+                .and("json_data IS NOT NULL");
 
         return query(
                 connection,
-                GET_TASKS_FOR_IDS,
-                q -> q.addParameters(taskIds).executeAndFetch(TaskModel.class));
+                builder,
+                QueryContext.read("task"),
+                q -> q.executeAndFetch(TaskModel.class));
     }
 
     private String insertOrUpdateWorkflow(WorkflowModel workflow, boolean update) {
@@ -649,12 +689,18 @@ public class PostgresExecutionDAO extends PostgresBaseDAO
     }
 
     private WorkflowModel readWorkflow(Connection connection, String workflowId) {
-        String GET_WORKFLOW = "SELECT json_data FROM workflow WHERE workflow_id = ?";
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .select("json_data")
+                        .from("workflow")
+                        .where("workflow_id = :workflowId")
+                        .bind("workflowId", workflowId);
 
         return query(
                 connection,
-                GET_WORKFLOW,
-                q -> q.addParameter(workflowId).executeAndFetchFirst(WorkflowModel.class));
+                builder,
+                QueryContext.read("workflow"),
+                q -> q.executeAndFetchFirst(WorkflowModel.class));
     }
 
     private void addWorkflow(Connection connection, WorkflowModel workflow) {
@@ -671,54 +717,68 @@ public class PostgresExecutionDAO extends PostgresBaseDAO
     }
 
     private void updateWorkflow(Connection connection, WorkflowModel workflow) {
-        String UPDATE_WORKFLOW =
-                "UPDATE workflow SET json_data = ?, modified_on = CURRENT_TIMESTAMP WHERE workflow_id = ?";
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .raw(
+                                "UPDATE workflow SET json_data = :jsonData, modified_on = CURRENT_TIMESTAMP")
+                        .where("workflow_id = :workflowId")
+                        .bind("jsonData", toJson(workflow))
+                        .bind("workflowId", workflow.getWorkflowId());
 
-        execute(
-                connection,
-                UPDATE_WORKFLOW,
-                q ->
-                        q.addJsonParameter(workflow)
-                                .addParameter(workflow.getWorkflowId())
-                                .executeUpdate());
+        execute(connection, builder, QueryContext.write("workflow"));
     }
 
     private void removeWorkflow(Connection connection, String workflowId) {
-        String REMOVE_WORKFLOW = "DELETE FROM workflow WHERE workflow_id = ?";
-        execute(connection, REMOVE_WORKFLOW, q -> q.addParameter(workflowId).executeDelete());
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .raw("DELETE FROM workflow")
+                        .where("workflow_id = :workflowId")
+                        .bind("workflowId", workflowId);
+        execute(connection, builder, QueryContext.write("workflow"));
     }
 
     private void addPendingWorkflow(Connection connection, String workflowType, String workflowId) {
 
-        String EXISTS_PENDING_WORKFLOW =
-                "SELECT EXISTS(SELECT 1 FROM workflow_pending WHERE workflow_type = ? AND workflow_id = ?)";
+        SqlQueryBuilder existsQuery =
+                SqlQueryBuilder.create()
+                        .select("1")
+                        .from("workflow_pending")
+                        .where("workflow_type = :workflowType")
+                        .and("workflow_id = :workflowId")
+                        .bind("workflowType", workflowType)
+                        .bind("workflowId", workflowId);
 
         boolean exists =
                 query(
                         connection,
-                        EXISTS_PENDING_WORKFLOW,
-                        q -> q.addParameter(workflowType).addParameter(workflowId).exists());
+                        existsQuery,
+                        QueryContext.read("workflow_pending"),
+                        q -> q.exists());
 
         if (!exists) {
-            String INSERT_PENDING_WORKFLOW =
-                    "INSERT INTO workflow_pending (workflow_type, workflow_id) VALUES (?, ?) ON CONFLICT (workflow_type,workflow_id) DO NOTHING";
+            SqlInsertBuilder insert =
+                    SqlInsertBuilder.create()
+                            .into("workflow_pending")
+                            .column("workflow_type", workflowType)
+                            .column("workflow_id", workflowId)
+                            .onConflict("workflow_type", "workflow_id")
+                            .onConflictDoNothing();
 
-            execute(
-                    connection,
-                    INSERT_PENDING_WORKFLOW,
-                    q -> q.addParameter(workflowType).addParameter(workflowId).executeUpdate());
+            execute(connection, insert, QueryContext.write("workflow_pending"));
         }
     }
 
     private void removePendingWorkflow(
             Connection connection, String workflowType, String workflowId) {
-        String REMOVE_PENDING_WORKFLOW =
-                "DELETE FROM workflow_pending WHERE workflow_type = ? AND workflow_id = ?";
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .raw("DELETE FROM workflow_pending")
+                        .where("workflow_type = :workflowType")
+                        .and("workflow_id = :workflowId")
+                        .bind("workflowType", workflowType)
+                        .bind("workflowId", workflowId);
 
-        execute(
-                connection,
-                REMOVE_PENDING_WORKFLOW,
-                q -> q.addParameter(workflowType).addParameter(workflowId).executeDelete());
+        execute(connection, builder, QueryContext.write("workflow_pending"));
     }
 
     private void insertOrUpdateTaskData(Connection connection, TaskModel task) {
@@ -726,129 +786,137 @@ public class PostgresExecutionDAO extends PostgresBaseDAO
          * Most times the row will be updated so let's try the update first. This used to be an 'INSERT/ON CONFLICT do update' sql statement. The problem with that
          * is that if we try the INSERT first, the sequence will be increased even if the ON CONFLICT happens.
          */
-        String UPDATE_TASK =
-                "UPDATE task SET json_data=?, modified_on=CURRENT_TIMESTAMP WHERE task_id=?";
-        int rowsUpdated =
-                query(
-                        connection,
-                        UPDATE_TASK,
-                        q ->
-                                q.addJsonParameter(task)
-                                        .addParameter(task.getTaskId())
-                                        .executeUpdate());
+        SqlQueryBuilder update =
+                SqlQueryBuilder.create()
+                        .raw(
+                                "UPDATE task SET json_data = :jsonData, modified_on = CURRENT_TIMESTAMP")
+                        .where("task_id = :taskId")
+                        .bind("jsonData", toJson(task))
+                        .bind("taskId", task.getTaskId());
+        int rowsUpdated = execute(connection, update, QueryContext.write("task"));
 
         if (rowsUpdated == 0) {
-            String INSERT_TASK =
-                    "INSERT INTO task (task_id, json_data, modified_on) VALUES (?, ?, CURRENT_TIMESTAMP) ON CONFLICT (task_id) DO UPDATE SET json_data=excluded.json_data, modified_on=excluded.modified_on";
-            execute(
-                    connection,
-                    INSERT_TASK,
-                    q -> q.addParameter(task.getTaskId()).addJsonParameter(task).executeUpdate());
+            SqlInsertBuilder insert =
+                    SqlInsertBuilder.create()
+                            .into("task")
+                            .column("task_id", task.getTaskId())
+                            .column("json_data", toJson(task))
+                            .columnRaw("modified_on", "CURRENT_TIMESTAMP")
+                            .onConflict("task_id")
+                            .doUpdateSet(
+                                    "json_data = excluded.json_data",
+                                    "modified_on = excluded.modified_on");
+            execute(connection, insert, QueryContext.write("task"));
         }
     }
 
     private void removeTaskData(Connection connection, TaskModel task) {
-        String REMOVE_TASK = "DELETE FROM task WHERE task_id = ?";
-        execute(connection, REMOVE_TASK, q -> q.addParameter(task.getTaskId()).executeDelete());
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .raw("DELETE FROM task")
+                        .where("task_id = :taskId")
+                        .bind("taskId", task.getTaskId());
+        execute(connection, builder, QueryContext.write("task"));
     }
 
     private void addWorkflowToTaskMapping(Connection connection, TaskModel task) {
 
-        String EXISTS_WORKFLOW_TO_TASK =
-                "SELECT EXISTS(SELECT 1 FROM workflow_to_task WHERE workflow_id = ? AND task_id = ?)";
+        SqlQueryBuilder existsQuery =
+                SqlQueryBuilder.create()
+                        .select("1")
+                        .from("workflow_to_task")
+                        .where("workflow_id = :workflowId")
+                        .and("task_id = :taskId")
+                        .bind("workflowId", task.getWorkflowInstanceId())
+                        .bind("taskId", task.getTaskId());
 
         boolean exists =
                 query(
                         connection,
-                        EXISTS_WORKFLOW_TO_TASK,
-                        q ->
-                                q.addParameter(task.getWorkflowInstanceId())
-                                        .addParameter(task.getTaskId())
-                                        .exists());
+                        existsQuery,
+                        QueryContext.read("workflow_to_task"),
+                        q -> q.exists());
 
         if (!exists) {
-            String INSERT_WORKFLOW_TO_TASK =
-                    "INSERT INTO workflow_to_task (workflow_id, task_id) VALUES (?, ?) ON CONFLICT (workflow_id,task_id) DO NOTHING";
+            SqlInsertBuilder insert =
+                    SqlInsertBuilder.create()
+                            .into("workflow_to_task")
+                            .column("workflow_id", task.getWorkflowInstanceId())
+                            .column("task_id", task.getTaskId())
+                            .onConflict("workflow_id", "task_id")
+                            .onConflictDoNothing();
 
-            execute(
-                    connection,
-                    INSERT_WORKFLOW_TO_TASK,
-                    q ->
-                            q.addParameter(task.getWorkflowInstanceId())
-                                    .addParameter(task.getTaskId())
-                                    .executeUpdate());
+            execute(connection, insert, QueryContext.write("workflow_to_task"));
         }
     }
 
     private void removeWorkflowToTaskMapping(Connection connection, TaskModel task) {
-        String REMOVE_WORKFLOW_TO_TASK =
-                "DELETE FROM workflow_to_task WHERE workflow_id = ? AND task_id = ?";
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .raw("DELETE FROM workflow_to_task")
+                        .where("workflow_id = :workflowId")
+                        .and("task_id = :taskId")
+                        .bind("workflowId", task.getWorkflowInstanceId())
+                        .bind("taskId", task.getTaskId());
 
-        execute(
-                connection,
-                REMOVE_WORKFLOW_TO_TASK,
-                q ->
-                        q.addParameter(task.getWorkflowInstanceId())
-                                .addParameter(task.getTaskId())
-                                .executeDelete());
+        execute(connection, builder, QueryContext.write("workflow_to_task"));
     }
 
     private void addWorkflowDefToWorkflowMapping(Connection connection, WorkflowModel workflow) {
-        String INSERT_WORKFLOW_DEF_TO_WORKFLOW =
-                "INSERT INTO workflow_def_to_workflow (workflow_def, date_str, workflow_id) VALUES (?, ?, ?)";
+        SqlInsertBuilder insert =
+                SqlInsertBuilder.create()
+                        .into("workflow_def_to_workflow")
+                        .column("workflow_def", workflow.getWorkflowName())
+                        .column("date_str", dateStr(workflow.getCreateTime()))
+                        .column("workflow_id", workflow.getWorkflowId());
 
-        execute(
-                connection,
-                INSERT_WORKFLOW_DEF_TO_WORKFLOW,
-                q ->
-                        q.addParameter(workflow.getWorkflowName())
-                                .addParameter(dateStr(workflow.getCreateTime()))
-                                .addParameter(workflow.getWorkflowId())
-                                .executeUpdate());
+        execute(connection, insert, QueryContext.write("workflow_def_to_workflow"));
     }
 
     private void removeWorkflowDefToWorkflowMapping(Connection connection, WorkflowModel workflow) {
-        String REMOVE_WORKFLOW_DEF_TO_WORKFLOW =
-                "DELETE FROM workflow_def_to_workflow WHERE workflow_def = ? AND date_str = ? AND workflow_id = ?";
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .raw("DELETE FROM workflow_def_to_workflow")
+                        .where("workflow_def = :workflowDef")
+                        .and("date_str = :dateStr")
+                        .and("workflow_id = :workflowId")
+                        .bind("workflowDef", workflow.getWorkflowName())
+                        .bind("dateStr", dateStr(workflow.getCreateTime()))
+                        .bind("workflowId", workflow.getWorkflowId());
 
-        execute(
-                connection,
-                REMOVE_WORKFLOW_DEF_TO_WORKFLOW,
-                q ->
-                        q.addParameter(workflow.getWorkflowName())
-                                .addParameter(dateStr(workflow.getCreateTime()))
-                                .addParameter(workflow.getWorkflowId())
-                                .executeUpdate());
+        execute(connection, builder, QueryContext.write("workflow_def_to_workflow"));
     }
 
     @VisibleForTesting
     boolean addScheduledTask(Connection connection, TaskModel task, String taskKey) {
 
-        final String EXISTS_SCHEDULED_TASK =
-                "SELECT EXISTS(SELECT 1 FROM task_scheduled where workflow_id = ? AND task_key = ?)";
+        SqlQueryBuilder existsQuery =
+                SqlQueryBuilder.create()
+                        .select("1")
+                        .from("task_scheduled")
+                        .where("workflow_id = :workflowId")
+                        .and("task_key = :taskKey")
+                        .bind("workflowId", task.getWorkflowInstanceId())
+                        .bind("taskKey", taskKey);
 
         boolean exists =
                 query(
                         connection,
-                        EXISTS_SCHEDULED_TASK,
-                        q ->
-                                q.addParameter(task.getWorkflowInstanceId())
-                                        .addParameter(taskKey)
-                                        .exists());
+                        existsQuery,
+                        QueryContext.read("task_scheduled"),
+                        q -> q.exists());
 
         if (!exists) {
-            final String INSERT_IGNORE_SCHEDULED_TASK =
-                    "INSERT INTO task_scheduled (workflow_id, task_key, task_id) VALUES (?, ?, ?) ON CONFLICT (workflow_id,task_key) DO NOTHING";
+            SqlInsertBuilder insert =
+                    SqlInsertBuilder.create()
+                            .into("task_scheduled")
+                            .column("workflow_id", task.getWorkflowInstanceId())
+                            .column("task_key", taskKey)
+                            .column("task_id", task.getTaskId())
+                            .onConflict("workflow_id", "task_key")
+                            .onConflictDoNothing();
 
-            int count =
-                    query(
-                            connection,
-                            INSERT_IGNORE_SCHEDULED_TASK,
-                            q ->
-                                    q.addParameter(task.getWorkflowInstanceId())
-                                            .addParameter(taskKey)
-                                            .addParameter(task.getTaskId())
-                                            .executeUpdate());
+            int count = execute(connection, insert, QueryContext.write("task_scheduled"));
             return count > 0;
         } else {
             return false;
@@ -856,134 +924,117 @@ public class PostgresExecutionDAO extends PostgresBaseDAO
     }
 
     private void removeScheduledTask(Connection connection, TaskModel task, String taskKey) {
-        String REMOVE_SCHEDULED_TASK =
-                "DELETE FROM task_scheduled WHERE workflow_id = ? AND task_key = ?";
-        execute(
-                connection,
-                REMOVE_SCHEDULED_TASK,
-                q ->
-                        q.addParameter(task.getWorkflowInstanceId())
-                                .addParameter(taskKey)
-                                .executeDelete());
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .raw("DELETE FROM task_scheduled")
+                        .where("workflow_id = :workflowId")
+                        .and("task_key = :taskKey")
+                        .bind("workflowId", task.getWorkflowInstanceId())
+                        .bind("taskKey", taskKey);
+        execute(connection, builder, QueryContext.write("task_scheduled"));
     }
 
     private void addTaskInProgress(Connection connection, TaskModel task) {
-        String EXISTS_IN_PROGRESS_TASK =
-                "SELECT EXISTS(SELECT 1 FROM task_in_progress WHERE task_def_name = ? AND task_id = ?)";
+        SqlQueryBuilder existsQuery =
+                SqlQueryBuilder.create()
+                        .select("1")
+                        .from("task_in_progress")
+                        .where("task_def_name = :taskDefName")
+                        .and("task_id = :taskId")
+                        .bind("taskDefName", task.getTaskDefName())
+                        .bind("taskId", task.getTaskId());
 
         boolean exists =
                 query(
                         connection,
-                        EXISTS_IN_PROGRESS_TASK,
-                        q ->
-                                q.addParameter(task.getTaskDefName())
-                                        .addParameter(task.getTaskId())
-                                        .exists());
+                        existsQuery,
+                        QueryContext.read("task_in_progress"),
+                        q -> q.exists());
 
         if (!exists) {
-            String INSERT_IN_PROGRESS_TASK =
-                    "INSERT INTO task_in_progress (task_def_name, task_id, workflow_id) VALUES (?, ?, ?)";
+            SqlInsertBuilder insert =
+                    SqlInsertBuilder.create()
+                            .into("task_in_progress")
+                            .column("task_def_name", task.getTaskDefName())
+                            .column("task_id", task.getTaskId())
+                            .column("workflow_id", task.getWorkflowInstanceId());
 
-            execute(
-                    connection,
-                    INSERT_IN_PROGRESS_TASK,
-                    q ->
-                            q.addParameter(task.getTaskDefName())
-                                    .addParameter(task.getTaskId())
-                                    .addParameter(task.getWorkflowInstanceId())
-                                    .executeUpdate());
+            execute(connection, insert, QueryContext.write("task_in_progress"));
         }
     }
 
     private void removeTaskInProgress(Connection connection, TaskModel task) {
-        String REMOVE_IN_PROGRESS_TASK =
-                "DELETE FROM task_in_progress WHERE task_def_name = ? AND task_id = ?";
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .raw("DELETE FROM task_in_progress")
+                        .where("task_def_name = :taskDefName")
+                        .and("task_id = :taskId")
+                        .bind("taskDefName", task.getTaskDefName())
+                        .bind("taskId", task.getTaskId());
 
-        execute(
-                connection,
-                REMOVE_IN_PROGRESS_TASK,
-                q ->
-                        q.addParameter(task.getTaskDefName())
-                                .addParameter(task.getTaskId())
-                                .executeUpdate());
+        execute(connection, builder, QueryContext.write("task_in_progress"));
     }
 
     private void updateInProgressStatus(Connection connection, TaskModel task, boolean inProgress) {
-        String UPDATE_IN_PROGRESS_TASK_STATUS =
-                "UPDATE task_in_progress SET in_progress_status = ?, modified_on = CURRENT_TIMESTAMP "
-                        + "WHERE task_def_name = ? AND task_id = ?";
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .raw(
+                                "UPDATE task_in_progress SET in_progress_status = :inProgress, modified_on = CURRENT_TIMESTAMP")
+                        .where("task_def_name = :taskDefName")
+                        .and("task_id = :taskId")
+                        .bind("inProgress", inProgress)
+                        .bind("taskDefName", task.getTaskDefName())
+                        .bind("taskId", task.getTaskId());
 
-        execute(
-                connection,
-                UPDATE_IN_PROGRESS_TASK_STATUS,
-                q ->
-                        q.addParameter(inProgress)
-                                .addParameter(task.getTaskDefName())
-                                .addParameter(task.getTaskId())
-                                .executeUpdate());
+        execute(connection, builder, QueryContext.write("task_in_progress"));
     }
 
     private boolean insertEventExecution(Connection connection, EventExecution eventExecution) {
-
-        String INSERT_EVENT_EXECUTION =
-                "INSERT INTO event_execution (event_handler_name, event_name, message_id, execution_id, json_data) "
-                        + "VALUES (?, ?, ?, ?, ?) "
-                        + "ON CONFLICT DO NOTHING";
-        int count =
-                query(
-                        connection,
-                        INSERT_EVENT_EXECUTION,
-                        q ->
-                                q.addParameter(eventExecution.getName())
-                                        .addParameter(eventExecution.getEvent())
-                                        .addParameter(eventExecution.getMessageId())
-                                        .addParameter(eventExecution.getId())
-                                        .addJsonParameter(eventExecution)
-                                        .executeUpdate());
+        SqlInsertBuilder insert =
+                SqlInsertBuilder.create()
+                        .into("event_execution")
+                        .column("event_handler_name", eventExecution.getName())
+                        .column("event_name", eventExecution.getEvent())
+                        .column("message_id", eventExecution.getMessageId())
+                        .column("execution_id", eventExecution.getId())
+                        .column("json_data", toJson(eventExecution))
+                        .onConflictDoNothing();
+        int count = execute(connection, insert, QueryContext.write("event_execution"));
         return count > 0;
     }
 
     private void updateEventExecution(Connection connection, EventExecution eventExecution) {
-        // @formatter:off
-        String UPDATE_EVENT_EXECUTION =
-                "UPDATE event_execution SET "
-                        + "json_data = ?, "
-                        + "modified_on = CURRENT_TIMESTAMP "
-                        + "WHERE event_handler_name = ? "
-                        + "AND event_name = ? "
-                        + "AND message_id = ? "
-                        + "AND execution_id = ?";
-        // @formatter:on
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .raw(
+                                "UPDATE event_execution SET json_data = :jsonData, modified_on = CURRENT_TIMESTAMP")
+                        .where("event_handler_name = :eventHandlerName")
+                        .and("event_name = :eventName")
+                        .and("message_id = :messageId")
+                        .and("execution_id = :executionId")
+                        .bind("jsonData", toJson(eventExecution))
+                        .bind("eventHandlerName", eventExecution.getName())
+                        .bind("eventName", eventExecution.getEvent())
+                        .bind("messageId", eventExecution.getMessageId())
+                        .bind("executionId", eventExecution.getId());
 
-        execute(
-                connection,
-                UPDATE_EVENT_EXECUTION,
-                q ->
-                        q.addJsonParameter(eventExecution)
-                                .addParameter(eventExecution.getName())
-                                .addParameter(eventExecution.getEvent())
-                                .addParameter(eventExecution.getMessageId())
-                                .addParameter(eventExecution.getId())
-                                .executeUpdate());
+        execute(connection, builder, QueryContext.write("event_execution"));
     }
 
     private void removeEventExecution(Connection connection, EventExecution eventExecution) {
-        String REMOVE_EVENT_EXECUTION =
-                "DELETE FROM event_execution "
-                        + "WHERE event_handler_name = ? "
-                        + "AND event_name = ? "
-                        + "AND message_id = ? "
-                        + "AND execution_id = ?";
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .raw("DELETE FROM event_execution")
+                        .where("event_handler_name = :eventHandlerName")
+                        .and("event_name = :eventName")
+                        .and("message_id = :messageId")
+                        .and("execution_id = :executionId")
+                        .bind("eventHandlerName", eventExecution.getName())
+                        .bind("eventName", eventExecution.getEvent())
+                        .bind("messageId", eventExecution.getMessageId())
+                        .bind("executionId", eventExecution.getId());
 
-        execute(
-                connection,
-                REMOVE_EVENT_EXECUTION,
-                q ->
-                        q.addParameter(eventExecution.getName())
-                                .addParameter(eventExecution.getEvent())
-                                .addParameter(eventExecution.getMessageId())
-                                .addParameter(eventExecution.getId())
-                                .executeUpdate());
+        execute(connection, builder, QueryContext.write("event_execution"));
     }
 
     private EventExecution readEventExecution(
@@ -992,35 +1043,39 @@ public class PostgresExecutionDAO extends PostgresBaseDAO
             String eventName,
             String messageId,
             String executionId) {
-        // @formatter:off
-        String GET_EVENT_EXECUTION =
-                "SELECT json_data FROM event_execution "
-                        + "WHERE event_handler_name = ? "
-                        + "AND event_name = ? "
-                        + "AND message_id = ? "
-                        + "AND execution_id = ?";
-        // @formatter:on
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .select("json_data")
+                        .from("event_execution")
+                        .where("event_handler_name = :eventHandlerName")
+                        .and("event_name = :eventName")
+                        .and("message_id = :messageId")
+                        .and("execution_id = :executionId")
+                        .bind("eventHandlerName", eventHandlerName)
+                        .bind("eventName", eventName)
+                        .bind("messageId", messageId)
+                        .bind("executionId", executionId);
         return query(
                 connection,
-                GET_EVENT_EXECUTION,
-                q ->
-                        q.addParameter(eventHandlerName)
-                                .addParameter(eventName)
-                                .addParameter(messageId)
-                                .addParameter(executionId)
-                                .executeAndFetchFirst(EventExecution.class));
+                builder,
+                QueryContext.read("event_execution"),
+                q -> q.executeAndFetchFirst(EventExecution.class));
     }
 
     private List<String> findAllTasksInProgressInOrderOfArrival(TaskModel task, int limit) {
-        String GET_IN_PROGRESS_TASKS_WITH_LIMIT =
-                "SELECT task_id FROM task_in_progress WHERE task_def_name = ? ORDER BY created_on LIMIT ?";
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .select("task_id")
+                        .from("task_in_progress")
+                        .where("task_def_name = :taskDefName")
+                        .bind("taskDefName", task.getTaskDefName())
+                        .orderBy("created_on")
+                        .limit(limit);
 
         return queryWithTransaction(
-                GET_IN_PROGRESS_TASKS_WITH_LIMIT,
-                q ->
-                        q.addParameter(task.getTaskDefName())
-                                .addParameter(limit)
-                                .executeScalarList(String.class));
+                builder,
+                QueryContext.read("task_in_progress"),
+                q -> q.executeScalarList(String.class));
     }
 
     private void validate(TaskModel task) {

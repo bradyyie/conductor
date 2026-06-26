@@ -42,8 +42,7 @@ class SqlBuilderSeamTest {
         qb.and("org_id = :orgId").bind("orgId", "acme");
 
         SqlQueryBuilder.Rendered r = qb.render();
-        assertEquals(
-                "SELECT payload FROM workflow WHERE workflow_id = ? AND org_id = ?", r.sql());
+        assertEquals("SELECT payload FROM workflow WHERE workflow_id = ? AND org_id = ?", r.sql());
         // Binds are positional in marker order regardless of bind() call order.
         assertEquals(List.of("w1", "acme"), r.binds());
     }
@@ -61,6 +60,51 @@ class SqlBuilderSeamTest {
         SqlQueryBuilder.Rendered r = qb.render();
         assertEquals("SELECT * FROM task WHERE a = ? AND b = ?", r.sql());
         assertEquals(List.of(1, 2), r.binds());
+    }
+
+    @Test
+    void readSeam_predicateLandsInWhereBeforeTrailingClause() {
+        // OSS adapter builds a locking read whose trailing clause must stay last.
+        SqlQueryBuilder qb =
+                SqlQueryBuilder.create()
+                        .select("json_data")
+                        .from("task_in_progress tip INNER JOIN task t ON t.task_id = tip.task_id")
+                        .where("task_def_name = :name")
+                        .bind("name", "myTask")
+                        .trailing("FOR UPDATE SKIP LOCKED");
+
+        // Enterprise "applyQueryExtensions" appends org_id; it MUST land inside WHERE, before the
+        // lock clause — even though trailing() was called first.
+        qb.and("org_id = :orgId").bind("orgId", "acme");
+
+        SqlQueryBuilder.Rendered r = qb.render();
+        assertEquals(
+                "SELECT json_data FROM task_in_progress tip INNER JOIN task t ON t.task_id = tip.task_id "
+                        + "WHERE task_def_name = ? AND org_id = ? FOR UPDATE SKIP LOCKED",
+                r.sql());
+        assertEquals(List.of("myTask", "acme"), r.binds());
+    }
+
+    @Test
+    void writeSeam_rawColumnAndTargetlessDoNothingCompose() {
+        // OSS adapter builds an insert with a CURRENT_TIMESTAMP raw column + target-less DO
+        // NOTHING.
+        SqlInsertBuilder ib =
+                SqlInsertBuilder.create()
+                        .into("event_execution")
+                        .column("execution_id", "e1")
+                        .columnRaw("modified_on", "CURRENT_TIMESTAMP")
+                        .onConflictDoNothing();
+
+        // Enterprise "applyWriteExtensions" adds org_id as an ordinary column (no conflict target).
+        ib.column("org_id", "acme");
+
+        SqlInsertBuilder.Rendered r = ib.render();
+        assertEquals(
+                "INSERT INTO event_execution (execution_id, modified_on, org_id) "
+                        + "VALUES (?, CURRENT_TIMESTAMP, ?) ON CONFLICT DO NOTHING",
+                r.sql());
+        assertEquals(List.of("e1", "acme"), r.binds());
     }
 
     @Test
