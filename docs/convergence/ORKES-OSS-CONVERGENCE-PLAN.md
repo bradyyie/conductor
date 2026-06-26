@@ -669,7 +669,16 @@ Remaining (larger, dedicated PRs / decisions — some may stay enterprise):
 
 **Real backport bug fixed:** `WorkflowModel.setNotifications(null)` NPE'd (`new ConcurrentHashMap<>(null)`); Orkes never hit it because `StartWorkflowInput.notifications` defaulted to an empty map. Fixed both (default + null-guard) — resolved TestWorkflowExecutor.testStartWorkflow/testErrorHandlingOnCreateWorkflowFailure.
 
-**Two server-test divergences flagged (need a deliberate decision, NOT a rushed edit):**
+**Two server-test divergences — RESOLVED:**
+1. WAIT async-ness is now a config property `conductor.app.wait-task-async` (OSS `Wait` has `Wait()`=async default, `Wait(boolean)`, and `@Autowired Wait(ConductorProperties)`). Orkes `TestWorkflowExecutor` uses `new Wait(false)` (sync) → 63/0. OSS suite unaffected (default async).
+2. GraalVM bumped to 25.0.2 in Orkes (matches OSS polyglot/truffle; protobuf stays 3.x) → `TestLambda` 1/0 and other script tasks load.
+
+**Spring context load (full `@SpringBootTest`) — RESOLVED:** post-cutover, OSS `conductor-core` beans are scanned alongside Orkes overrides, which broke context load for ~90 integration tests (one cascading root cause). Fixes in `OrkesConductorApplication.excludeFilters` + one `@Primary`:
+- Bean-NAME clashes excluded: OSS `GraalJSEvaluator`/`JavascriptEvaluator` ("graaljs"/"javascript" owned by Orkes' Graal evaluator), OSS `VersionService`/`WorkflowTestService`/`WorkflowMonitor`/`WorkflowIntrospection` (same default name as Orkes versions).
+- Bean-TYPE ambiguities: excluded OSS `TimeBasedIDGenerator` (D2 — Orkes' org-aware `TimeBasedUUIDGenerator` wins; both `@Component` on `conductor.id.generator=time_based`); `@Primary` on `OrkesCDCEventPublisher` (implements WorkflowStatusListener+TaskStatusListener; OSS ships `matchIfMissing=true` stub listeners → single-injection was ambiguous).
+- Verified across diverse `@SpringBootTest` classes: ParamUtilsSecretJSONTest 6/0, OrkesPermissionEvaluatorTest 2/0, RoleResourceTest 4/0, AuthorizationResourceTest 14/0, EventExecutionResourceTest 1/0, GatewayServiceControllerTest 42/0, ApiGatewayAccessControlTest 21/0, WorkflowSizeServiceTest 5/0. (Full server suite spins one Postgres container per `@SpringBootTest` class — run with constrained `--max-workers` to avoid Docker exhaustion.)
+
+**(historical) Two server-test divergences originally flagged (now resolved above):**
 1. `TestWorkflowExecutor.testScheduleTask` — OSS `Wait.isAsync()==true` (async; queued, not started inline) vs old Orkes `Wait` which was sync (base default `false`, no override). Orkes now uses OSS `Wait`, so `WAIT` is async at runtime → the test's inline-start counts (`startedTaskCount==2`, `queuedTaskCount==1`) reflect the old sync behavior. Decision: adopt OSS async `Wait` (update the test counts to 1 started / 2 queued) OR preserve Orkes sync `Wait` via a D3 `isOverride()` `OrkesWait extends Wait` with `isAsync()==false`.
 2. `TestLambda` (+ likely other script tasks) — `ExceptionInInitializerError: Polyglot version compatibility check failed`: GraalVM Polyglot version skew between the OSS `conductor-core` (OSS `Lambda`→`ScriptEvaluator`→graal polyglot) and the Orkes server runtime classpath. Decision: align the `org.graalvm.polyglot`/`js` versions in the Orkes server (dependency, not logic).
 
