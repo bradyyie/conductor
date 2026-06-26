@@ -699,13 +699,42 @@ Remaining (larger, dedicated PRs / decisions — some may stay enterprise):
 **Hexagonal burndown (Phase 4) — guardrail refined; persistence split is the real fix (NOT port extraction):**
 - `moduleDependencyReport` made accurate: counts PRODUCTION coupling only (test-scope wiring is composition-root, not a violation); treats `*-oss` as foundation (enterprise→oss is intended open-core layering); `workers` recognised as a `@SpringBootApplication` composition root. Net: the stale 29 (which still referenced the deleted `oss-core`) → **13 real production violations**.
 - **Correction (a wrong turn was reverted):** an `api-gateway-api` sibling port module was briefly created and then **reverted**. Per §6.4 + §8 + Phase 4, enterprise DAO ports (`GatewayConfigDAO`, `HumanTaskDAO`, `EnterpriseSchedulerDAO`, …) are enterprise contracts that **belong to their feature** (gateway port in `api-gateway`, human port in `human`) and never move to OSS or to generic `*-api` siblings. The `postgres/mysql→{api-gateway,human,scheduler-enterprise,integration,api-orchestration}` edges are a symptom of the **persistence monolith**, not of port placement.
-- **The correct fix = §8 persistence split, which depends on the §6.3 org_id seam (Phase 1, still TODO):** OSS `conductor-<db>-persistence` must expose generic no-op `applyQueryExtensions(SqlQueryBuilder, QueryContext)`/`applyWriteExtensions(...)` hooks called in every read/write path (the `SqlQueryBuilder`/`QueryContext` interfaces exist in OSS but are not yet wired into the OSS persistence DAOs). Then the Orkes monolith splits into (a) thin enterprise subclasses of the OSS engine adapters that override the seam to inject `org_id`, and (b) the enterprise feature stores (gateway/human/scheduler/integration/registry) which move to live **with their feature**, depending on the feature's port — removing the sideways edges. Kept (legitimate, independent): the guardrail-accuracy refinements + the redis-persistence unused `api-gateway` dep removal.
+- **The correct fix = §8 persistence split, built on the §6.3 org_id seam.** Kept (legitimate, independent): the guardrail-accuracy refinements + the redis-persistence unused `api-gateway` dep removal.
 
-**Remaining (the real engine/persistence convergence, in plan order):**
-1. **Phase 1 §6.3** — wire `SqlQueryBuilder`/`applyQueryExtensions`/`applyWriteExtensions` into the OSS `*-persistence` base DAOs (no-op in OSS); add `WorkflowExecutorOps` `protected` seams. This is "the hardest seam" (§14.1) and the prerequisite for everything below.
-2. **Phase 3/4** — convert one OSS store to an enterprise subclass overriding the seam for `org_id` (prove the vertical), then split each persistence monolith (move feature stores to their features; engine DAOs become OSS subclasses) → sideways edges go to zero.
-3. **Phase 2** — finish backporting the remaining pure-engine deltas (strip introspection→SPI / org_id) per the §7.1 disposition table.
-4. Full container-heavy suites in CI; publishing + branded composite.
+### Phase 1 §6.3 — org_id seam FOUNDATION landed ✅ (OSS branch)
+- Concrete **`SqlInsertBuilder`** (`org.conductoross.conductor.persistence.query`): `INSERT … ON CONFLICT … DO UPDATE` with **composing** `column()` + `onConflict()` (enterprise adds `org_id` without clobbering the OSS natural key); mirrors the existing `SqlQueryBuilder`.
+- **`PostgresBaseDAO`** gains `protected` no-op `applyQueryExtensions(SqlQueryBuilder, QueryContext)` / `applyWriteExtensions(SqlInsertBuilder, QueryContext)` + builder-aware `query()/execute()` helpers that invoke the hook immediately before render (all additive).
+- **`SqlBuilderSeamTest`** proves the enterprise-override composes (4/0) with order-independent positional binds; OSS standalone has no org concept.
+- **First real path migrated:** `PostgresExecutionDAO.addWorkflow` now builds via `SqlInsertBuilder` → byte-identical SQL, but runs the write hook. `PostgresExecutionDAOTest` 10/0, no regression. Published to mavenLocal.
+
+---
+
+## WHAT'S LEFT (authoritative, supersedes earlier "Remaining" notes)
+
+**Done:** engine cutover (`oss-core` deleted, Orkes on OSS `conductor-core`); OSS superset/seam backports; D3 excludeFilters retirement (21 task/mapper beans); Spring context loads; OSS validated repo-wide (~1771 tests, 13 modules); Orkes validated module-by-module; dependency guardrail accurate (**13 real production violations**); org_id seam **foundation** in OSS proven on one path.
+
+**Remaining — the persistence convergence is the bulk (§8), in strict order:**
+
+1. **Finish Phase 1 §6.3 (OSS) — migrate the rest of the OSS SQL adapters onto the builder so the hook is universal.** Mechanical but large + per-method careful (JSON params, special types, raw-JDBC bypasses — §14.1, §17 inventory below). Order: postgres `ExecutionDAO` (reads + the `insertOrUpdateWorkflow`/task upsert write paths) → `MetadataDAO` → `QueueDAO`/`PollDataDAO`; then **mysql** base DAO + adapters get the same hooks/helpers. Also add `WorkflowExecutorOps` `protected` seams (§6.3.4) for the executor subclass. Acceptance: every OSS `*-persistence` read/write renders through a builder that calls the hook; OSS suites unchanged.
+
+2. **Phase 3 (Enterprise) — prove the full vertical.** Convert **one** Orkes store (postgres `ExecutionDAO`) from a standalone re-implementation to `extends` the OSS `PostgresExecutionDAO`, overriding `applyQueryExtensions`/`applyWriteExtensions` to inject `org_id` (read filter + insert column + `ON CONFLICT` target via `OrgContext`); **delete the duplicated SQL**. Re-express `OrkesWorkflowExecutor` as `extends WorkflowExecutorOps` over the §6.3.4 seams (delete duplicated engine code). Requires the Orkes module to consume the OSS `conductor-postgres-persistence` artifact. Acceptance: Orkes postgres execution e2e green with org_id applied via the seam, duplicated code gone.
+
+3. **Phase 4 (Enterprise) — split the monoliths → the clean module graph.** For postgres/mysql/redis: (a) the engine DAOs become thin OSS subclasses (step 2); (b) the **enterprise feature stores move out of the persistence monolith to live with their feature** (`PostgresGatewayConfigDAO`→ gateway vertical, `PostgresHumanTaskDAO`→ human, `PostgresSchedulerDAO`→ scheduler, integration/registry likewise), each depending on its feature's port. This is what removes the **13 sideways edges** (`postgres/mysql→{api-gateway,human,scheduler-enterprise,integration,api-orchestration}` + the event/gateway feature edges) and yields "api-gateway is just api-gateway." Also adopt OSS `conductor-scheduler-core`/`-<db>-persistence` so `scheduler-enterprise` extends OSS scheduler-core. Acceptance: dependency checker shows **zero** sideways edges.
+
+4. **Phase 2 (OSS) — finish the pure-engine backports** per the §7.1 disposition table (strip introspection→SPI / org_id from the remaining task/mapper deltas), shrinking the Orkes override surface further.
+
+5. **Phase 5 — finalize enterprise modules:** consolidate `OrgContext`/`IDTools`/ID-generator duplicates into `enterprise-common`; confirm every OSS-bound path is org-free.
+
+6. **Phase 7 / ops — CI + publishing:** run the full container-heavy server/integration suites in CI (container-per-`@SpringBootTest` is impractical locally); OSS publishing (GitHub Packages/S3); branded composite `server-enterprise`; enforce ArchUnit/dependency gates.
+
+**Smaller known follow-ups:** the residual justified `excludeFilters` entries (Event/Wait timer-model tasks, event/scheduler infra, evaluator name-clashes, OSS re-implementations) can move to `@ConditionalOnMissingBean` seams where the OSS bean tolerates optional override (D3); each is correct as-is for now.
+
+### §17 — OSS DAO builder-migration inventory (for step 1)
+Per-method migration is the long pole. Track completion here.
+- `PostgresExecutionDAO`: `addWorkflow` ✅. TODO: `updateWorkflow`, `removeWorkflow`, task CRUD (`insertOrUpdateTaskData`, `getTask(s)`, `removeTask`), `getWorkflow`/`readWorkflow`, pending-workflow + correlation reads, event-execution CRUD, poll-data — and the JSON/`addJsonParameter` paths (pre-serialize via `toJson` into the builder).
+- `PostgresMetadataDAO`, `PostgresQueueDAO`, `PostgresPollDataDAO`: not started.
+- `MySQL*` adapters + `MySQLBaseDAO`: hooks/helpers not added; not started.
+- Risk (§14.1): any method that bypasses the query wrapper must be moved onto the builder or the org_id hook will silently miss it.
 
 ---
 
