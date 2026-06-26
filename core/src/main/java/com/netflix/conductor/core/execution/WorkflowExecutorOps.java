@@ -473,6 +473,18 @@ public class WorkflowExecutorOps implements WorkflowExecutor {
             if (taskToRetry.isPresent()) {
                 return findLastFailedSubWorkflowIfAny(taskToRetry.get(), subWorkflow);
             }
+        } else if (TaskType.TASK_TYPE_DO_WHILE.equals(task.getTaskType())
+                && UNSUCCESSFUL_TERMINAL_TASK.test(task)) {
+            // A DO_WHILE goes FAILED when an iteration fails; descend into the nested failed
+            // SUB_WORKFLOW (if any) so retry locates the deepest failed sub-workflow inside a loop.
+            Optional<TaskModel> nestedFailedSubWorkflow =
+                    parentWorkflow.getTasks().stream()
+                            .filter(t -> TaskType.TASK_TYPE_SUB_WORKFLOW.equals(t.getTaskType()))
+                            .filter(UNSUCCESSFUL_TERMINAL_TASK)
+                            .findFirst();
+            if (nestedFailedSubWorkflow.isPresent()) {
+                return findLastFailedSubWorkflowIfAny(nestedFailedSubWorkflow.get(), parentWorkflow);
+            }
         }
         return parentWorkflow;
     }
@@ -2020,6 +2032,9 @@ public class WorkflowExecutorOps implements WorkflowExecutor {
                             TaskUtils.appendIteration(
                                     t.getReferenceTaskName(), loopTask.getIteration()));
                     t.setIteration(loopTask.getIteration());
+                    // Link each loop-over iteration task back to its parent DO_WHILE task so
+                    // downstream consumers can correlate iteration tasks with the loop.
+                    t.setLoopTaskId(loopTask.getTaskId());
                 });
         scheduleTask(workflow, scheduledLoopOverTasks);
         workflow.getTasks().addAll(scheduledLoopOverTasks);
