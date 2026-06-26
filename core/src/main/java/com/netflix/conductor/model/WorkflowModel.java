@@ -393,7 +393,10 @@ public class WorkflowModel {
     }
 
     public void setNotifications(Map<String, WorkflowNotifications> notifications) {
-        this.notifications = new java.util.concurrent.ConcurrentHashMap<>(notifications);
+        this.notifications =
+                notifications == null
+                        ? new java.util.concurrent.ConcurrentHashMap<>()
+                        : new java.util.concurrent.ConcurrentHashMap<>(notifications);
     }
 
     public String getExternalInputPayloadStoragePath() {

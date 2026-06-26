@@ -39,7 +39,8 @@ public class StartWorkflowInput {
     private IdempotencyStrategy idempotencyStrategy;
     private WorkflowConsistency workflowConsistency = WorkflowConsistency.DURABLE;
     private String createdBy;
-    private Map<String, com.netflix.conductor.model.WorkflowNotifications> notifications;
+    private Map<String, com.netflix.conductor.model.WorkflowNotifications> notifications =
+            new java.util.HashMap<>();
 
     public StartWorkflowInput() {}
 
