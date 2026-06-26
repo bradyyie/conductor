@@ -95,6 +95,19 @@ public class Query implements AutoCloseable {
         return addParameterInternal((ps, idx) -> ps.setArray(idx, valueArray));
     }
 
+    /**
+     * Binds a SQL array of the given element type (e.g. {@code "text"}). Generic, feature-agnostic
+     * helper used by adapters that persist array columns.
+     */
+    public Query addParameterArray(java.util.Collection<?> values, String dataType) {
+        return addParameterInternal(
+                (ps, idx) ->
+                        ps.setArray(
+                                idx,
+                                ps.getConnection()
+                                        .createArrayOf(dataType, values.toArray(new Object[0]))));
+    }
+
     public Query addParameter(final int value) {
         return addParameterInternal((ps, idx) -> ps.setInt(idx, value));
     }

@@ -819,7 +819,7 @@ public class PostgresExecutionDAO extends PostgresBaseDAO
         execute(connection, builder, QueryContext.write("task"));
     }
 
-    private void addWorkflowToTaskMapping(Connection connection, TaskModel task) {
+    protected void addWorkflowToTaskMapping(Connection connection, TaskModel task) {
 
         SqlQueryBuilder existsQuery =
                 SqlQueryBuilder.create()
@@ -850,7 +850,7 @@ public class PostgresExecutionDAO extends PostgresBaseDAO
         }
     }
 
-    private void removeWorkflowToTaskMapping(Connection connection, TaskModel task) {
+    protected void removeWorkflowToTaskMapping(Connection connection, TaskModel task) {
         SqlQueryBuilder builder =
                 SqlQueryBuilder.create()
                         .raw("DELETE FROM workflow_to_task")
@@ -888,7 +888,7 @@ public class PostgresExecutionDAO extends PostgresBaseDAO
     }
 
     @VisibleForTesting
-    boolean addScheduledTask(Connection connection, TaskModel task, String taskKey) {
+    protected boolean addScheduledTask(Connection connection, TaskModel task, String taskKey) {
 
         SqlQueryBuilder existsQuery =
                 SqlQueryBuilder.create()
@@ -923,7 +923,7 @@ public class PostgresExecutionDAO extends PostgresBaseDAO
         }
     }
 
-    private void removeScheduledTask(Connection connection, TaskModel task, String taskKey) {
+    protected void removeScheduledTask(Connection connection, TaskModel task, String taskKey) {
         SqlQueryBuilder builder =
                 SqlQueryBuilder.create()
                         .raw("DELETE FROM task_scheduled")
@@ -934,7 +934,7 @@ public class PostgresExecutionDAO extends PostgresBaseDAO
         execute(connection, builder, QueryContext.write("task_scheduled"));
     }
 
-    private void addTaskInProgress(Connection connection, TaskModel task) {
+    protected void addTaskInProgress(Connection connection, TaskModel task) {
         SqlQueryBuilder existsQuery =
                 SqlQueryBuilder.create()
                         .select("1")
@@ -963,7 +963,7 @@ public class PostgresExecutionDAO extends PostgresBaseDAO
         }
     }
 
-    private void removeTaskInProgress(Connection connection, TaskModel task) {
+    protected void removeTaskInProgress(Connection connection, TaskModel task) {
         SqlQueryBuilder builder =
                 SqlQueryBuilder.create()
                         .raw("DELETE FROM task_in_progress")
@@ -975,7 +975,8 @@ public class PostgresExecutionDAO extends PostgresBaseDAO
         execute(connection, builder, QueryContext.write("task_in_progress"));
     }
 
-    private void updateInProgressStatus(Connection connection, TaskModel task, boolean inProgress) {
+    protected void updateInProgressStatus(
+            Connection connection, TaskModel task, boolean inProgress) {
         SqlQueryBuilder builder =
                 SqlQueryBuilder.create()
                         .raw(
