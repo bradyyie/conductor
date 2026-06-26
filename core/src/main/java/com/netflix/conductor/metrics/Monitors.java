@@ -12,9 +12,9 @@
  */
 package com.netflix.conductor.metrics;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -566,7 +566,8 @@ public class Monitors {
         }
         try {
             String workflowName = StringUtils.defaultIfBlank(workflow.getWorkflowName(), "unknown");
-            distributionSummary(WORKFLOW_SIZE_BYTES, "workflowName", workflowName).record(sizeBytes);
+            distributionSummary(WORKFLOW_SIZE_BYTES, "workflowName", workflowName)
+                    .record(sizeBytes);
             distributionSummary(WORKFLOW_SIZE_RATIO, "workflowName", workflowName)
                     .record(sizeRatio(sizeBytes, limitBytes));
             if (sizeBytes > limitBytes) {

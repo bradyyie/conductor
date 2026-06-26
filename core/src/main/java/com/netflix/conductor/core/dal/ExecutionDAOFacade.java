@@ -881,12 +881,12 @@ public class ExecutionDAOFacade {
         public void run() {
             try {
                 WorkflowModel workflowModel = executionDAO.getWorkflow(workflowId, false);
-                 indexDAO.asyncIndexWorkflow(new WorkflowSummary(workflowModel.toWorkflow()));
-             } catch (Exception e) {
-                 LOGGER.error("Unable to update workflow: {}", workflowId, e);
-             }
-         }
-     }
+                indexDAO.asyncIndexWorkflow(new WorkflowSummary(workflowModel.toWorkflow()));
+            } catch (Exception e) {
+                LOGGER.error("Unable to update workflow: {}", workflowId, e);
+            }
+        }
+    }
 
     // --- Delegators backported from Orkes (engine extensions over ExecutionDAO) ---
 

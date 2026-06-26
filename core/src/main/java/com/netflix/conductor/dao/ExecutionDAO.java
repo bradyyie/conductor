@@ -233,7 +233,8 @@ public interface ExecutionDAO {
         SAMPLED,
         // Running workflows & tasks stored only in the primary store and indexed (default mode).
         PRIMARY_ONLY,
-        // Stored in a low-latency backend (e.g. Redis) and asynchronously written to the primary DB.
+        // Stored in a low-latency backend (e.g. Redis) and asynchronously written to the primary
+        // DB.
         WRITE_BEHIND
     }
 

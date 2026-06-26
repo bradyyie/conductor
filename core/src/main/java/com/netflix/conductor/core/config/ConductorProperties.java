@@ -608,7 +608,8 @@ public class ConductorProperties {
         return syncSystemTaskMaxCallbackAfterSeconds;
     }
 
-    public void setSyncSystemTaskMaxCallbackAfterSeconds(int syncSystemTaskMaxCallbackAfterSeconds) {
+    public void setSyncSystemTaskMaxCallbackAfterSeconds(
+            int syncSystemTaskMaxCallbackAfterSeconds) {
         this.syncSystemTaskMaxCallbackAfterSeconds = syncSystemTaskMaxCallbackAfterSeconds;
     }
 
