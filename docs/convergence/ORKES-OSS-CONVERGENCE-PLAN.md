@@ -707,15 +707,23 @@ Remaining (larger, dedicated PRs / decisions — some may stay enterprise):
 - **`SqlBuilderSeamTest`** proves the enterprise-override composes (4/0) with order-independent positional binds; OSS standalone has no org concept.
 - **First real path migrated:** `PostgresExecutionDAO.addWorkflow` now builds via `SqlInsertBuilder` → byte-identical SQL, but runs the write hook. `PostgresExecutionDAOTest` 10/0, no regression. Published to mavenLocal.
 
+### Phase 1 §6.3 — ALL OSS SQL adapters migrated ✅ (OSS branch) — step 1 DONE
+- **Postgres adapter fully on the seam:** `PostgresExecutionDAO` (every read/write/update/delete), `PostgresMetadataDAO`, `PostgresQueueDAO`, `PostgresPollDataDAO`. EXISTS-checks rewritten as `SELECT 1 … + Query.exists()` so the hook can scope the `WHERE`; locking (`FOR UPDATE SKIP LOCKED`/`FOR SHARE`), `ORDER BY`/`LIMIT`, correlated-subquery detail queries, the CTE `popMessages`, and dynamic `IN (…)` lists all carried through. Full `postgres-persistence` suite **118/0** under Testcontainers.
+- **MySQL adapter fully on the seam (dialect-aware):** `MySQLBaseDAO` got the hooks + helpers; `MySQLExecutionDAO` (incl. PollData), `MySQLMetadataDAO`, `MySQLQueueDAO` migrated. `SqlInsertBuilder` now renders MySQL `INSERT IGNORE`/`ON DUPLICATE KEY UPDATE` (default POSTGRES unchanged); `TIMESTAMPADD(...)` interval expressions carried via `columnRaw(expr, binds)`. MySQL DAO suites **8/0 + 7/0 + 10/0**.
+- **Builder hardening (additive):** clause-structured `SqlQueryBuilder` (+`trailing()`); `::type`-cast-safe named-param regex; `SqlInsertBuilder.columnRaw[,+binds]`, target-less `DO NOTHING`, `Dialect`; null-safe `Query.addParameters` in both postgres+mysql `Query` utils. Core builder tests `SqlBuilderSeamTest` 9/0, `SqlQueryBuilderTest` 7/0; `conductor-core` full **826/0/7**.
+- **Also fixed:** a latent spotless-clean violation set in 5 previously-backported `core` files (separate `style(core)` commit); a real latent null-bind NPE for nullable text columns (queue `payload`, `correlation_id`).
+- Published `org.conductoross:conductor-{core,postgres-persistence,mysql-persistence}:3.30.2-rc1` to mavenLocal — ready for the step-2 enterprise subclasses.
+- **Local-flake note:** `PostgresLockDAOTest`'s lease assertion compares host-JVM vs container wall clocks with ~ms tolerance and flakes under Docker-Desktop VM clock skew; `PostgresLockDAO` uses none of the migrated code (verified) — environmental, not a regression.
+
 ---
 
 ## WHAT'S LEFT (authoritative, supersedes earlier "Remaining" notes)
 
-**Done:** engine cutover (`oss-core` deleted, Orkes on OSS `conductor-core`); OSS superset/seam backports; D3 excludeFilters retirement (21 task/mapper beans); Spring context loads; OSS validated repo-wide (~1771 tests, 13 modules); Orkes validated module-by-module; dependency guardrail accurate (**13 real production violations**); org_id seam **foundation** in OSS proven on one path.
+**Done:** engine cutover (`oss-core` deleted, Orkes on OSS `conductor-core`); OSS superset/seam backports; D3 excludeFilters retirement (21 task/mapper beans); Spring context loads; OSS validated repo-wide (~1771 tests, 13 modules); Orkes validated module-by-module; dependency guardrail accurate (**13 real production violations**); **org_id seam UNIVERSAL across every OSS postgres + mysql adapter — step 1 complete** (§16/§17), artifacts re-published to mavenLocal.
 
 **Remaining — the persistence convergence is the bulk (§8), in strict order:**
 
-1. **Finish Phase 1 §6.3 (OSS) — migrate the rest of the OSS SQL adapters onto the builder so the hook is universal.** Mechanical but large + per-method careful (JSON params, special types, raw-JDBC bypasses — §14.1, §17 inventory below). Order: postgres `ExecutionDAO` (reads + the `insertOrUpdateWorkflow`/task upsert write paths) → `MetadataDAO` → `QueueDAO`/`PollDataDAO`; then **mysql** base DAO + adapters get the same hooks/helpers. Also add `WorkflowExecutorOps` `protected` seams (§6.3.4) for the executor subclass. Acceptance: every OSS `*-persistence` read/write renders through a builder that calls the hook; OSS suites unchanged.
+1. ~~**Finish Phase 1 §6.3 (OSS) — migrate the rest of the OSS SQL adapters onto the builder so the hook is universal.**~~ ✅ **DONE** (see §16 "ALL OSS SQL adapters migrated" + §17). Both postgres and mysql adapters render every read/write through a builder that calls the hook; OSS suites green; artifacts re-published. (`WorkflowExecutorOps` `beforeStartWorkflow`/`onDecide` seams were already added; the remaining sync-exec/idempotency engine-core backport lands with step 2/Phase 2.)
 
 2. **Phase 3 (Enterprise) — prove the full vertical.** Convert **one** Orkes store (postgres `ExecutionDAO`) from a standalone re-implementation to `extends` the OSS `PostgresExecutionDAO`, overriding `applyQueryExtensions`/`applyWriteExtensions` to inject `org_id` (read filter + insert column + `ON CONFLICT` target via `OrgContext`); **delete the duplicated SQL**. Re-express `OrkesWorkflowExecutor` as `extends WorkflowExecutorOps` over the §6.3.4 seams (delete duplicated engine code). Requires the Orkes module to consume the OSS `conductor-postgres-persistence` artifact. Acceptance: Orkes postgres execution e2e green with org_id applied via the seam, duplicated code gone.
 
@@ -729,12 +737,15 @@ Remaining (larger, dedicated PRs / decisions — some may stay enterprise):
 
 **Smaller known follow-ups:** the residual justified `excludeFilters` entries (Event/Wait timer-model tasks, event/scheduler infra, evaluator name-clashes, OSS re-implementations) can move to `@ConditionalOnMissingBean` seams where the OSS bean tolerates optional override (D3); each is correct as-is for now.
 
-### §17 — OSS DAO builder-migration inventory (for step 1)
-Per-method migration is the long pole. Track completion here.
-- `PostgresExecutionDAO`: `addWorkflow` ✅. TODO: `updateWorkflow`, `removeWorkflow`, task CRUD (`insertOrUpdateTaskData`, `getTask(s)`, `removeTask`), `getWorkflow`/`readWorkflow`, pending-workflow + correlation reads, event-execution CRUD, poll-data — and the JSON/`addJsonParameter` paths (pre-serialize via `toJson` into the builder).
-- `PostgresMetadataDAO`, `PostgresQueueDAO`, `PostgresPollDataDAO`: not started.
-- `MySQL*` adapters + `MySQLBaseDAO`: hooks/helpers not added; not started.
-- Risk (§14.1): any method that bypasses the query wrapper must be moved onto the builder or the org_id hook will silently miss it.
+### §17 — OSS DAO builder-migration inventory (for step 1) — ✅ COMPLETE
+Per-method migration was the long pole. **Every OSS SQL adapter is now on the builder seam** (every read/write/update/delete renders through `SqlQueryBuilder`/`SqlInsertBuilder` and invokes the no-op `applyQueryExtensions`/`applyWriteExtensions` hooks). The §14.1 risk is closed for these adapters — no raw-JDBC bypass remains.
+- `PostgresExecutionDAO` ✅ (all paths; `PostgresExecutionDAOTest` 10/0, full module 118/0).
+- `PostgresMetadataDAO` ✅ (9/0), `PostgresQueueDAO` ✅ (10/0), `PostgresPollDataDAO` ✅ (8/0).
+- `MySQLBaseDAO` hooks/helpers ✅; `MySQLExecutionDAO` (incl. PollData) ✅ (8/0), `MySQLMetadataDAO` ✅ (7/0), `MySQLQueueDAO` ✅ (10/0).
+- Builder enhancements landed (additive, feature-agnostic): `SqlQueryBuilder` restructured to head + WHERE-predicate-list + tail (hook-appended predicates land in `WHERE`, before trailing `ORDER BY`/`LIMIT`/`FOR UPDATE`/`FOR SHARE`); named-param regex skips Postgres `::type` casts; `SqlInsertBuilder` gained `columnRaw(expr[,binds])` (e.g. `CURRENT_TIMESTAMP`, interval/`TIMESTAMPADD` expressions), target-less `ON CONFLICT DO NOTHING`, and **dialect awareness** (POSTGRES `ON CONFLICT` vs MYSQL `INSERT IGNORE`/`ON DUPLICATE KEY UPDATE`); `Query.addParameters` is now null-safe (nullable `payload`/`correlation_id`). `SqlBuilderSeamTest` 9/0, `SqlQueryBuilderTest` 7/0; `org.conductoross:conductor-{core,postgres-persistence,mysql-persistence}:3.30.2-rc1` re-published to mavenLocal.
+- **Patterns proven for the enterprise override (step 2):** read filter via `applyQueryExtensions` → `query.and("org_id = :orgId")`; write via `applyWriteExtensions` → `insert.column("org_id", ...)` (+ `.onConflict("org_id")` on Postgres; MySQL implies it via the unique key). `QueryContext.table()` is the discriminator for per-table org-scoping; joined/EXISTS/CTE methods that the hook can't decorate generically are explicit enterprise full-overrides.
+
+> Known non-blocking caveat surfaced during step 1: the enterprise Orkes `ExecutionDAO` has **structurally diverged** beyond `org_id` (date/shard partition tables + `hasTableOrgId`, `json_data::text` casts, a status-column pending model vs OSS `workflow_pending`). So in step 2 the "delete the duplicated SQL" applies cleanly to the paths that are structurally identical modulo `org_id`; the diverged paths stay full overrides (or require a separate data-model convergence decision). This refines, not contradicts, §8.2.
 
 ---
 
