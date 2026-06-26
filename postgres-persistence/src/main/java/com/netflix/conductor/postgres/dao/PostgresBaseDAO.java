@@ -30,6 +30,10 @@ import org.springframework.retry.support.RetryTemplate;
 import com.netflix.conductor.core.exception.NonTransientException;
 import com.netflix.conductor.postgres.util.*;
 
+import org.conductoross.conductor.persistence.query.QueryContext;
+import org.conductoross.conductor.persistence.query.SqlInsertBuilder;
+import org.conductoross.conductor.persistence.query.SqlQueryBuilder;
+
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -252,5 +256,67 @@ public abstract class PostgresBaseDAO {
      */
     protected void executeWithTransaction(String query, ExecuteFunction function) {
         withTransaction(tx -> execute(tx, query, function));
+    }
+
+    // --- Generic query-extension seams (P2: feature-agnostic; no-op in OSS) ---
+    // These let an enterprise subclass decorate every read/write (e.g. append an org_id filter or
+    // column) without OSS knowing org/tenant concepts. OSS adapters build queries via the builders
+    // and run them through the helpers below, which invoke the hooks immediately before render.
+
+    /**
+     * Invoked immediately before a read query is rendered. No-op in OSS. Subclasses may append
+     * predicates/binds via the builder (e.g. {@code query.and("org_id = :orgId").bind(...)}).
+     */
+    protected void applyQueryExtensions(SqlQueryBuilder query, QueryContext context) {
+        // no-op in OSS
+    }
+
+    /**
+     * Invoked immediately before an insert/upsert is rendered. No-op in OSS. Subclasses may add
+     * columns and extend the {@code ON CONFLICT} target (e.g. add {@code org_id}).
+     */
+    protected void applyWriteExtensions(SqlInsertBuilder insert, QueryContext context) {
+        // no-op in OSS
+    }
+
+    /**
+     * Builds and runs a read query through {@link SqlQueryBuilder}, invoking {@link
+     * #applyQueryExtensions(SqlQueryBuilder, QueryContext)} immediately before render. The supplied
+     * {@code function} should only fetch results — all binds come from the builder.
+     */
+    protected <R> R query(
+            Connection tx,
+            SqlQueryBuilder builder,
+            QueryContext context,
+            QueryFunction<R> function) {
+        applyQueryExtensions(builder, context);
+        SqlQueryBuilder.Rendered rendered = builder.render();
+        return query(
+                tx, rendered.sql(), q -> function.apply(q.addParameters(rendered.binds().toArray())));
+    }
+
+    /** Transactional variant of {@link #query(Connection, SqlQueryBuilder, QueryContext, QueryFunction)}. */
+    protected <R> R queryWithTransaction(
+            SqlQueryBuilder builder, QueryContext context, QueryFunction<R> function) {
+        return getWithRetriedTransactions(tx -> query(tx, builder, context, function));
+    }
+
+    /**
+     * Builds and runs an insert/upsert through {@link SqlInsertBuilder}, invoking {@link
+     * #applyWriteExtensions(SqlInsertBuilder, QueryContext)} immediately before render. Returns the
+     * affected row count.
+     */
+    protected int execute(Connection tx, SqlInsertBuilder builder, QueryContext context) {
+        applyWriteExtensions(builder, context);
+        SqlInsertBuilder.Rendered rendered = builder.render();
+        return query(
+                tx,
+                rendered.sql(),
+                q -> q.addParameters(rendered.binds().toArray()).executeUpdate());
+    }
+
+    /** Transactional variant of {@link #execute(Connection, SqlInsertBuilder, QueryContext)}. */
+    protected int executeWithTransaction(SqlInsertBuilder builder, QueryContext context) {
+        return getWithRetriedTransactions(tx -> execute(tx, builder, context));
     }
 }
