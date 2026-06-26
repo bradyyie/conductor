@@ -665,7 +665,15 @@ Remaining (larger, dedicated PRs / decisions — some may stay enterprise):
 - Orkes runtime suites green: postgres-persistence **435/0**; mysql metadata+ratelimiter+execution+scheduler **246/0**; redis OrkesRedisExecutionDAOTest **26/0** (incl. 3 payload-size-metric tests); archive ArchivedExecutionDAO* incl. distributed-chaos **green**.
 - NOTE: full mysql-persistence suite spins one container per class and exhausts Docker locally (env, not code) — validate affected classes or run with constrained parallelism. A corrupted local `postgres:14` layer caused 2 transient audit-test failures; fixed by `docker pull`.
 
-**Remaining:** run server/integration/event-processor/api-orchestration/scheduler/webhooks/human/workers suites under Docker; retire `excludeFilters` in favor of `isOverride()`/`@Primary` bean wiring; CI publishing + branded composite; hexagonal sideways-dep burndown.
+**Additional runtime validation:** event-processor OrkesEventProcessorTest 4/0; api-orchestration ServiceRegistryServiceTest 56/0; scheduler-oss 36/0 + scheduler-enterprise SchedulerServiceTest 35/0; server engine units TestSimpleActionProcessor 6/0, TestWorkflowExecutor 61/63.
+
+**Real backport bug fixed:** `WorkflowModel.setNotifications(null)` NPE'd (`new ConcurrentHashMap<>(null)`); Orkes never hit it because `StartWorkflowInput.notifications` defaulted to an empty map. Fixed both (default + null-guard) — resolved TestWorkflowExecutor.testStartWorkflow/testErrorHandlingOnCreateWorkflowFailure.
+
+**Two server-test divergences flagged (need a deliberate decision, NOT a rushed edit):**
+1. `TestWorkflowExecutor.testScheduleTask` — OSS `Wait.isAsync()==true` (async; queued, not started inline) vs old Orkes `Wait` which was sync (base default `false`, no override). Orkes now uses OSS `Wait`, so `WAIT` is async at runtime → the test's inline-start counts (`startedTaskCount==2`, `queuedTaskCount==1`) reflect the old sync behavior. Decision: adopt OSS async `Wait` (update the test counts to 1 started / 2 queued) OR preserve Orkes sync `Wait` via a D3 `isOverride()` `OrkesWait extends Wait` with `isAsync()==false`.
+2. `TestLambda` (+ likely other script tasks) — `ExceptionInInitializerError: Polyglot version compatibility check failed`: GraalVM Polyglot version skew between the OSS `conductor-core` (OSS `Lambda`→`ScriptEvaluator`→graal polyglot) and the Orkes server runtime classpath. Decision: align the `org.graalvm.polyglot`/`js` versions in the Orkes server (dependency, not logic).
+
+**Remaining:** resolve the two divergences above; run full server/integration/webhooks/human/workers suites under Docker (note: mysql/full suites spin a container per class — constrain parallelism); retire `excludeFilters` in favor of `isOverride()`/`@Primary` bean wiring; CI publishing + branded composite; hexagonal sideways-dep burndown.
 
 ---
 
