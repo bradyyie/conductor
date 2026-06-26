@@ -686,7 +686,11 @@ Remaining (larger, dedicated PRs / decisions — some may stay enterprise):
 
 **Local Docker/Testcontainers note:** if `/var/run/docker.sock` is absent (Docker Desktop), Testcontainers' pinned `UnixSocketClientProviderStrategy` fails. Workaround for container suites: `~/.testcontainers.properties` → `docker.host=unix://<~/.docker/run/docker.sock>`, env `TESTCONTAINERS_RYUK_DISABLED=true` (Ryuk can't bind-mount the Desktop socket), and `--no-daemon` so env propagates. Also constrain `--max-workers` (each `@SpringBootTest`/DAO test spins its own Postgres/MySQL container).
 
-**Remaining:** retire `excludeFilters` in favor of `isOverride()`/`@Primary` bean wiring; full server/integration suites under Docker with constrained parallelism; CI publishing + branded composite; hexagonal sideways-dep burndown.
+**OSS side validated repo-wide (not just core):** `compileJava`+`compileTestJava` BUILD SUCCESSFUL across all ~40 OSS modules; suites green — conductor-core 815/0, common 50/0, rest 86/0, grpc 2/0, grpc-server 11/0, http-task 26/0, json-jq-task 7/0, postgres-persistence 118/0 (the lone `PostgresLockDAOTest` lease-timing failure under Ryuk-disabled container load passes 8/0 in isolation — flaky, not a regression). Confirms the additive `ExecutionDAO`/`MetadataDAO`/`Monitors`/`Wait` core changes don't break OSS's own reference modules.
+
+**Orkes side validated:** integration 40/0; api-orchestration 13+56/0; event-processor 4/0; human 85/0; webhooks 6/0(+32); workers 258/0; scheduler 36/0+35/0; persistence (postgres 435, mysql 246, redis 26, archive); server engine units + diverse `@SpringBootTest` (context-load) green.
+
+**Remaining:** retire `excludeFilters` in favor of `isOverride()`/`@Primary` bean wiring; run the full container-heavy server/integration suites in CI (locally each `@SpringBootTest` spins its own Postgres container → ~minutes/class, impractical to run all at once); CI publishing + branded composite; hexagonal sideways-dep burndown.
 
 ---
 
