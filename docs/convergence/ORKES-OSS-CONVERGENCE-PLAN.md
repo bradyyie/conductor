@@ -682,7 +682,11 @@ Remaining (larger, dedicated PRs / decisions — some may stay enterprise):
 1. `TestWorkflowExecutor.testScheduleTask` — OSS `Wait.isAsync()==true` (async; queued, not started inline) vs old Orkes `Wait` which was sync (base default `false`, no override). Orkes now uses OSS `Wait`, so `WAIT` is async at runtime → the test's inline-start counts (`startedTaskCount==2`, `queuedTaskCount==1`) reflect the old sync behavior. Decision: adopt OSS async `Wait` (update the test counts to 1 started / 2 queued) OR preserve Orkes sync `Wait` via a D3 `isOverride()` `OrkesWait extends Wait` with `isAsync()==false`.
 2. `TestLambda` (+ likely other script tasks) — `ExceptionInInitializerError: Polyglot version compatibility check failed`: GraalVM Polyglot version skew between the OSS `conductor-core` (OSS `Lambda`→`ScriptEvaluator`→graal polyglot) and the Orkes server runtime classpath. Decision: align the `org.graalvm.polyglot`/`js` versions in the Orkes server (dependency, not logic).
 
-**Remaining:** resolve the two divergences above; run full server/integration/webhooks/human/workers suites under Docker (note: mysql/full suites spin a container per class — constrain parallelism); retire `excludeFilters` in favor of `isOverride()`/`@Primary` bean wiring; CI publishing + branded composite; hexagonal sideways-dep burndown.
+**Additional module validation (green):** human 85/0; webhooks Postgres DAO 6/0 (+32 unit); workers 258 (incl. `OrkesConductorWorkersApplicationTest.contextLoads` — fixed by `conductor.app.sweeper.enabled=false`; the workers runtime must not run the OSS WorkflowSweeper, which is `matchIfMissing=true` and needs the sweeperExecutor); api-orchestration HTTP-client + service tests green.
+
+**Local Docker/Testcontainers note:** if `/var/run/docker.sock` is absent (Docker Desktop), Testcontainers' pinned `UnixSocketClientProviderStrategy` fails. Workaround for container suites: `~/.testcontainers.properties` → `docker.host=unix://<~/.docker/run/docker.sock>`, env `TESTCONTAINERS_RYUK_DISABLED=true` (Ryuk can't bind-mount the Desktop socket), and `--no-daemon` so env propagates. Also constrain `--max-workers` (each `@SpringBootTest`/DAO test spins its own Postgres/MySQL container).
+
+**Remaining:** retire `excludeFilters` in favor of `isOverride()`/`@Primary` bean wiring; full server/integration suites under Docker with constrained parallelism; CI publishing + branded composite; hexagonal sideways-dep burndown.
 
 ---
 
