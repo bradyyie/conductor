@@ -15,8 +15,10 @@ package com.netflix.conductor.core.execution.tasks;
 import java.time.Duration;
 import java.util.Optional;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
+import com.netflix.conductor.core.config.ConductorProperties;
 import com.netflix.conductor.core.execution.WorkflowExecutor;
 import com.netflix.conductor.model.TaskModel;
 import com.netflix.conductor.model.WorkflowModel;
@@ -30,8 +32,22 @@ public class Wait extends WorkflowSystemTask {
     public static final String DURATION_INPUT = "duration";
     public static final String UNTIL_INPUT = "until";
 
+    private final boolean async;
+
+    /** Defaults to asynchronous WAIT (the standard Conductor behavior). */
     public Wait() {
+        this(true);
+    }
+
+    public Wait(boolean async) {
         super(TASK_TYPE_WAIT);
+        this.async = async;
+    }
+
+    /** Spring wiring: WAIT async-ness is controlled by {@code conductor.app.wait-task-async}. */
+    @Autowired
+    public Wait(ConductorProperties properties) {
+        this(properties.isWaitTaskAsync());
     }
 
     @Override
@@ -73,7 +89,8 @@ public class Wait extends WorkflowSystemTask {
         return Optional.empty();
     }
 
+    @Override
     public boolean isAsync() {
-        return true;
+        return async;
     }
 }

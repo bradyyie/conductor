@@ -573,6 +573,21 @@ public class ConductorProperties {
 
     private boolean honorSyncSystemTaskCallbackAfter = false;
 
+    /**
+     * Whether the WAIT system task is asynchronous. When {@code true} (default) WAIT tasks are
+     * scheduled on the queue and evaluated by the system-task worker (non-blocking). When {@code
+     * false} the WAIT task is started inline during scheduling (legacy synchronous behavior).
+     */
+    private boolean waitTaskAsync = true;
+
+    public boolean isWaitTaskAsync() {
+        return waitTaskAsync;
+    }
+
+    public void setWaitTaskAsync(boolean waitTaskAsync) {
+        this.waitTaskAsync = waitTaskAsync;
+    }
+
     public int getTaskUpdateExecutorThreadCount() {
         return taskUpdateExecutorThreadCount;
     }
