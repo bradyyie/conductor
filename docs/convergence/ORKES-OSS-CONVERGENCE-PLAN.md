@@ -696,7 +696,12 @@ Remaining (larger, dedicated PRs / decisions — some may stay enterprise):
 
 **Orkes side validated:** integration 40/0; api-orchestration 13+56/0; event-processor 4/0; human 85/0; webhooks 6/0(+32); workers 258/0; scheduler 36/0+35/0; persistence (postgres 435, mysql 246, redis 26, archive); server engine units + diverse `@SpringBootTest` (context-load) green.
 
-**Remaining:** retire `excludeFilters` in favor of `isOverride()`/`@Primary` bean wiring; run the full container-heavy server/integration suites in CI (locally each `@SpringBootTest` spins its own Postgres container → ~minutes/class, impractical to run all at once); CI publishing + branded composite; hexagonal sideways-dep burndown.
+**Hexagonal burndown (Phase 4) — guardrail refined + first port extracted:**
+- `moduleDependencyReport` made accurate: counts PRODUCTION coupling only (test-scope wiring is composition-root, not a violation); treats `*-oss` as foundation (enterprise→oss is intended open-core layering); `workers` recognised as a `@SpringBootApplication` composition root. Net: the stale 29 (which still referenced the deleted `oss-core`) → **11 real production violations**.
+- **`api-gateway-api` extracted** (clean win, verified): the `GatewayConfigDAO` port + all gateway DTOs (`models/*`, `models/metrics/*` — pure types over `orkes-conductor-common`) now live in a `*-api` foundation module; `api-gateway` re-exports it via `api`; postgres/mysql-persistence depend on the api tier (not the feature); redis-persistence dropped an unused `api-gateway` dep. Removed 3 violations. Verified: whole project compiles; api-gateway 34/0; GatewayServiceControllerTest 42/0.
+- **Remaining 11 are entangled, NOT mechanical port moves**: `EnterpriseSchedulerDAO` couples to `security.model.*`; `PostgresSchedulerDAO` uses `SchedulerService` + `scheduler.config` (an adapter calling a feature service — needs dependency inversion); persistence→{human, api-orchestration, integration} similarly reach into services, not just ports; plus 3 feature→feature edges (api-gateway→integration, event-integration→integration, event-processor→event-integration). Burn these down deliberately, one vertical at a time — the api-gateway-api recipe where the surface is a clean port+DTO, dependency-inversion where it is a service call.
+
+**Remaining:** continue Phase 4 per-vertical (scheduler/human/registry/integration ports + invert adapter→service calls); retire the residual justified `excludeFilters` entries if/when OSS gains `@ConditionalOnMissingBean` seams; run the full container-heavy server/integration suites in CI (container-per-class is impractical locally); CI publishing + branded composite.
 
 ---
 
