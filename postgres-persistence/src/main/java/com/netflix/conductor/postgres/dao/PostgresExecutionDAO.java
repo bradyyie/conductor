@@ -39,6 +39,9 @@ import com.netflix.conductor.model.WorkflowModel;
 import com.netflix.conductor.postgres.util.ExecutorsUtil;
 import com.netflix.conductor.postgres.util.Query;
 
+import org.conductoross.conductor.persistence.query.QueryContext;
+import org.conductoross.conductor.persistence.query.SqlInsertBuilder;
+
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
@@ -655,17 +658,16 @@ public class PostgresExecutionDAO extends PostgresBaseDAO
     }
 
     private void addWorkflow(Connection connection, WorkflowModel workflow) {
-        String INSERT_WORKFLOW =
-                "INSERT INTO workflow (workflow_id, correlation_id, json_data) VALUES (?, ?, ?)";
-
-        execute(
-                connection,
-                INSERT_WORKFLOW,
-                q ->
-                        q.addParameter(workflow.getWorkflowId())
-                                .addParameter(workflow.getCorrelationId())
-                                .addJsonParameter(workflow)
-                                .executeUpdate());
+        // Built via SqlInsertBuilder so the generic applyWriteExtensions seam runs before render
+        // (no-op in OSS; an enterprise subclass adds e.g. an org_id column). Renders identically to
+        // the previous hand-written INSERT.
+        SqlInsertBuilder insert =
+                SqlInsertBuilder.create()
+                        .into("workflow")
+                        .column("workflow_id", workflow.getWorkflowId())
+                        .column("correlation_id", workflow.getCorrelationId())
+                        .column("json_data", toJson(workflow));
+        execute(connection, insert, QueryContext.write("workflow"));
     }
 
     private void updateWorkflow(Connection connection, WorkflowModel workflow) {
