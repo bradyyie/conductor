@@ -769,12 +769,18 @@ The recipe (proven on two features, both DBs):
 1. **Foundation base modules extracted** (one-time, done): `orkes-conductor-postgres-base` (`PostgresBaseDAO` + `Query` + functional interfaces) and `orkes-conductor-mysql-base` (`OrkesBaseDAO`, which extends the OSS `MySQLBaseDAO`). Same packages → zero import churn; added to the `moduleDependencyReport` `foundation` set; exposed via `api` (incl. spring-retry — `RetryTemplate` is in the base-DAO ctor). The persistence monoliths now expose `*-base` via `api` so existing consumers still see `PostgresBaseDAO`/`Query`.
 2. **Per-feature store move:** for each feature edge, move the Postgres + MySQL store(s) (and any feature-only helper, e.g. gateway's `OrgFilterHelper`) from the persistence monolith into the **feature module**; the feature module gains an `implementation project(':orkes-conductor-{postgres,mysql}-base')` dep; drop the monolith's `implementation project(':orkes-conductor-<feature>')` production edge. SQL unchanged — pure relocation. The feature's DAO test stays in the persistence module via a **test-scope** dep on the feature (test edges aren't violations).
 
-Done:
+Done (13 → 5 sideways edges):
 - **gateway ✅** — `Postgres/MySQLGatewayConfigDAO` (+ `OrgFilterHelper`) → `api-gateway`; both `→ api-gateway` edges gone (13→11). `PostgresGatewayConfigDAOTest` 26/0, `MySQLGatewayConfigDAOTest` 11/0.
 - **human ✅** — `Postgres/MySQLHumanTaskDAO` + `*TemplateDAO` → `human` (uses `io.orkes.conductor.model.*` locally); both `→ human` edges gone (11→9). `MySQLHumanTaskTemplateDAOTest` 10/0.
+- **registry ✅** — `Postgres/MySQLServiceRegistryDAO` + `*ProtoRegistryDAO` → `api-orchestration`; both `→ api-orchestration` edges gone (9→7). `PostgresServiceRegistryDAOTest` 12/0.
+- **integration ✅ (unused-dep removal)** — the integration DAOs implement ports that live in **core**, not the integration module, so the monoliths' `→ integration` production edge was an UNUSED declared dependency. Reclassified to `testImplementation` (the test infra references integration); no store move (7→5). A finding worth noting: not every "monolith → feature" edge is a real store coupling — some are stale unused deps.
 - Whole Orkes project `compileJava` + `compileTestJava` 0 errors after each.
 
-**Remaining 9:** persistence → {api-orchestration (registry stores), integration (6 DAOs each — the big one), scheduler-enterprise (incl. the archive-entangled `PostgresSchedulerArchiveDAO`)} = 6 edges via the same recipe; plus **3 feature-to-feature** edges (`api-gateway`/`event-integration`/`event-processor` → `integration`/`event-integration`) — a separate category (likely intended collaboration; needs a product call, since "ports stay with features" and `api-gateway-api` was reverted).
+**Remaining 5:**
+- **scheduler (2 edges) — entangled tests; deferred.** `Postgres/MySQLSchedulerDAO` + `PostgresSchedulerArchiveDAO` genuinely use scheduler-enterprise types (real move to `scheduler-enterprise`, which already has postgres-base-eligible needs and `api scheduler-oss`). But the scheduler tests live in **postgres-persistence** test sources (`io.orkes.conductor.scheduler.service.*`) and `scheduler-enterprise` already `testImplementation`-deps `postgres-persistence` — so the store move needs the scheduler tests relocated to `scheduler-enterprise` first to avoid a test-scope cycle. Mechanical but careful; do it as its own step.
+- **3 feature-to-feature edges** (`api-gateway`→`integration`, `event-integration`→`integration`, `event-processor`→`event-integration`): separate category — likely intended collaboration; needs a product call ("ports stay with features"; `api-gateway-api` was reverted). If accepted, baseline them in the checker.
+
+**Also still open:** `OrkesWorkflowExecutor extends WorkflowExecutorOps` (needs the sync-exec/idempotency engine-core backport).
 
 **Also still open:** `OrkesWorkflowExecutor extends WorkflowExecutorOps` (needs the sync-exec/idempotency engine-core backport).
 
