@@ -24,6 +24,9 @@ import java.util.concurrent.TimeUnit;
 
 import javax.sql.DataSource;
 
+import org.conductoross.conductor.persistence.query.QueryContext;
+import org.conductoross.conductor.persistence.query.SqlInsertBuilder;
+import org.conductoross.conductor.persistence.query.SqlQueryBuilder;
 import org.springframework.retry.support.RetryTemplate;
 
 import com.netflix.conductor.common.metadata.events.EventHandler;
@@ -95,12 +98,15 @@ public class MySQLMetadataDAO extends MySQLBaseDAO implements MetadataDAO, Event
 
     @Override
     public void removeTaskDef(String name) {
-        final String DELETE_TASKDEF_QUERY = "DELETE FROM meta_task_def WHERE name = ?";
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .raw("DELETE FROM meta_task_def")
+                        .where("name = :name")
+                        .bind("name", name);
 
-        executeWithTransaction(
-                DELETE_TASKDEF_QUERY,
-                q -> {
-                    if (!q.addParameter(name).executeDelete()) {
+        withTransaction(
+                tx -> {
+                    if (execute(tx, builder, QueryContext.write("meta_task_def")) == 0) {
                         throw new NotFoundException("No such task definition");
                     }
 
@@ -131,48 +137,57 @@ public class MySQLMetadataDAO extends MySQLBaseDAO implements MetadataDAO, Event
 
     @Override
     public Optional<WorkflowDef> getLatestWorkflowDef(String name) {
-        final String GET_LATEST_WORKFLOW_DEF_QUERY =
-                "SELECT json_data FROM meta_workflow_def WHERE NAME = ? AND "
-                        + "version = latest_version";
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .select("json_data")
+                        .from("meta_workflow_def")
+                        .where("name = :name")
+                        .and("version = latest_version")
+                        .bind("name", name);
 
         return Optional.ofNullable(
                 queryWithTransaction(
-                        GET_LATEST_WORKFLOW_DEF_QUERY,
-                        q -> q.addParameter(name).executeAndFetchFirst(WorkflowDef.class)));
+                        builder,
+                        QueryContext.read("meta_workflow_def"),
+                        q -> q.executeAndFetchFirst(WorkflowDef.class)));
     }
 
     @Override
     public Optional<WorkflowDef> getWorkflowDef(String name, int version) {
-        final String GET_WORKFLOW_DEF_QUERY =
-                "SELECT json_data FROM meta_workflow_def WHERE NAME = ? AND version = ?";
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .select("json_data")
+                        .from("meta_workflow_def")
+                        .where("name = :name")
+                        .and("version = :version")
+                        .bind("name", name)
+                        .bind("version", version);
         return Optional.ofNullable(
                 queryWithTransaction(
-                        GET_WORKFLOW_DEF_QUERY,
-                        q ->
-                                q.addParameter(name)
-                                        .addParameter(version)
-                                        .executeAndFetchFirst(WorkflowDef.class)));
+                        builder,
+                        QueryContext.read("meta_workflow_def"),
+                        q -> q.executeAndFetchFirst(WorkflowDef.class)));
     }
 
     @Override
     public void removeWorkflowDef(String name, Integer version) {
-        final String DELETE_WORKFLOW_QUERY =
-                "DELETE from meta_workflow_def WHERE name = ? AND version = ?";
+        SqlQueryBuilder delete =
+                SqlQueryBuilder.create()
+                        .raw("DELETE FROM meta_workflow_def")
+                        .where("name = :name")
+                        .and("version = :version")
+                        .bind("name", name)
+                        .bind("version", version);
 
         withTransaction(
                 tx -> {
                     // remove specified workflow
-                    execute(
-                            tx,
-                            DELETE_WORKFLOW_QUERY,
-                            q -> {
-                                if (!q.addParameter(name).addParameter(version).executeDelete()) {
-                                    throw new NotFoundException(
-                                            String.format(
-                                                    "No such workflow definition: %s version: %d",
-                                                    name, version));
-                                }
-                            });
+                    if (execute(tx, delete, QueryContext.write("meta_workflow_def")) == 0) {
+                        throw new NotFoundException(
+                                String.format(
+                                        "No such workflow definition: %s version: %d",
+                                        name, version));
+                    }
                     // reset latest version based on remaining rows for this workflow
                     Optional<Integer> maxVersion = getLatestVersion(tx, name);
                     maxVersion.ifPresent(newVersion -> updateLatestVersion(tx, name, newVersion));
@@ -180,53 +195,73 @@ public class MySQLMetadataDAO extends MySQLBaseDAO implements MetadataDAO, Event
     }
 
     public List<String> findAll() {
-        final String FIND_ALL_WORKFLOW_DEF_QUERY = "SELECT DISTINCT name FROM meta_workflow_def";
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create().select("DISTINCT name").from("meta_workflow_def");
         return queryWithTransaction(
-                FIND_ALL_WORKFLOW_DEF_QUERY, q -> q.executeAndFetch(String.class));
+                builder,
+                QueryContext.read("meta_workflow_def"),
+                q -> q.executeAndFetch(String.class));
     }
 
     @Override
     public List<WorkflowDef> getAllWorkflowDefs() {
-        final String GET_ALL_WORKFLOW_DEF_QUERY =
-                "SELECT json_data FROM meta_workflow_def ORDER BY name, version";
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .select("json_data")
+                        .from("meta_workflow_def")
+                        .orderBy("name", "version");
 
         return queryWithTransaction(
-                GET_ALL_WORKFLOW_DEF_QUERY, q -> q.executeAndFetch(WorkflowDef.class));
+                builder,
+                QueryContext.read("meta_workflow_def"),
+                q -> q.executeAndFetch(WorkflowDef.class));
     }
 
     @Override
     public List<WorkflowDef> getAllWorkflowDefsLatestVersions() {
-        final String GET_ALL_WORKFLOW_DEF_LATEST_VERSIONS_QUERY =
-                "SELECT json_data FROM meta_workflow_def wd WHERE wd.version = (SELECT MAX(version) FROM meta_workflow_def wd2 WHERE wd2.name = wd.name)";
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .select("json_data")
+                        .from("meta_workflow_def wd")
+                        .where(
+                                "wd.version = (SELECT MAX(version) FROM meta_workflow_def wd2 WHERE wd2.name = wd.name)");
         return queryWithTransaction(
-                GET_ALL_WORKFLOW_DEF_LATEST_VERSIONS_QUERY,
+                builder,
+                QueryContext.read("meta_workflow_def"),
                 q -> q.executeAndFetch(WorkflowDef.class));
     }
 
     public List<WorkflowDef> getAllLatest() {
-        final String GET_ALL_LATEST_WORKFLOW_DEF_QUERY =
-                "SELECT json_data FROM meta_workflow_def WHERE version = " + "latest_version";
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .select("json_data")
+                        .from("meta_workflow_def")
+                        .where("version = latest_version");
 
         return queryWithTransaction(
-                GET_ALL_LATEST_WORKFLOW_DEF_QUERY, q -> q.executeAndFetch(WorkflowDef.class));
+                builder,
+                QueryContext.read("meta_workflow_def"),
+                q -> q.executeAndFetch(WorkflowDef.class));
     }
 
     public List<WorkflowDef> getAllVersions(String name) {
-        final String GET_ALL_VERSIONS_WORKFLOW_DEF_QUERY =
-                "SELECT json_data FROM meta_workflow_def WHERE name = ? " + "ORDER BY version";
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .select("json_data")
+                        .from("meta_workflow_def")
+                        .where("name = :name")
+                        .bind("name", name)
+                        .orderBy("version");
 
         return queryWithTransaction(
-                GET_ALL_VERSIONS_WORKFLOW_DEF_QUERY,
-                q -> q.addParameter(name).executeAndFetch(WorkflowDef.class));
+                builder,
+                QueryContext.read("meta_workflow_def"),
+                q -> q.executeAndFetch(WorkflowDef.class));
     }
 
     @Override
     public void addEventHandler(EventHandler eventHandler) {
         Preconditions.checkNotNull(eventHandler.getName(), "EventHandler name cannot be null");
-
-        final String INSERT_EVENT_HANDLER_QUERY =
-                "INSERT INTO meta_event_handler (name, event, active, json_data) "
-                        + "VALUES (?, ?, ?, ?)";
 
         withTransaction(
                 tx -> {
@@ -237,28 +272,21 @@ public class MySQLMetadataDAO extends MySQLBaseDAO implements MetadataDAO, Event
                                         + " already exists!");
                     }
 
-                    execute(
-                            tx,
-                            INSERT_EVENT_HANDLER_QUERY,
-                            q ->
-                                    q.addParameter(eventHandler.getName())
-                                            .addParameter(eventHandler.getEvent())
-                                            .addParameter(eventHandler.isActive())
-                                            .addJsonParameter(eventHandler)
-                                            .executeUpdate());
+                    SqlInsertBuilder insert =
+                            SqlInsertBuilder.create()
+                                    .into("meta_event_handler")
+                                    .column("name", eventHandler.getName())
+                                    .column("event", eventHandler.getEvent())
+                                    .column("active", eventHandler.isActive())
+                                    .column("json_data", toJson(eventHandler));
+
+                    execute(tx, insert, QueryContext.write("meta_event_handler"));
                 });
     }
 
     @Override
     public void updateEventHandler(EventHandler eventHandler) {
         Preconditions.checkNotNull(eventHandler.getName(), "EventHandler name cannot be null");
-
-        // @formatter:off
-        final String UPDATE_EVENT_HANDLER_QUERY =
-                "UPDATE meta_event_handler SET "
-                        + "event = ?, active = ?, json_data = ?, "
-                        + "modified_on = CURRENT_TIMESTAMP WHERE name = ?";
-        // @formatter:on
 
         withTransaction(
                 tx -> {
@@ -268,22 +296,22 @@ public class MySQLMetadataDAO extends MySQLBaseDAO implements MetadataDAO, Event
                                 "EventHandler with name " + eventHandler.getName() + " not found!");
                     }
 
-                    execute(
-                            tx,
-                            UPDATE_EVENT_HANDLER_QUERY,
-                            q ->
-                                    q.addParameter(eventHandler.getEvent())
-                                            .addParameter(eventHandler.isActive())
-                                            .addJsonParameter(eventHandler)
-                                            .addParameter(eventHandler.getName())
-                                            .executeUpdate());
+                    SqlQueryBuilder update =
+                            SqlQueryBuilder.create()
+                                    .raw(
+                                            "UPDATE meta_event_handler SET event = :event, active = :active, json_data = :jsonData, modified_on = CURRENT_TIMESTAMP")
+                                    .where("name = :name")
+                                    .bind("event", eventHandler.getEvent())
+                                    .bind("active", eventHandler.isActive())
+                                    .bind("jsonData", toJson(eventHandler))
+                                    .bind("name", eventHandler.getName());
+
+                    execute(tx, update, QueryContext.write("meta_event_handler"));
                 });
     }
 
     @Override
     public void removeEventHandler(String name) {
-        final String DELETE_EVENT_HANDLER_QUERY = "DELETE FROM meta_event_handler WHERE name = ?";
-
         withTransaction(
                 tx -> {
                     EventHandler existing = getEventHandler(tx, name);
@@ -292,28 +320,38 @@ public class MySQLMetadataDAO extends MySQLBaseDAO implements MetadataDAO, Event
                                 "EventHandler with name " + name + " not found!");
                     }
 
-                    execute(
-                            tx,
-                            DELETE_EVENT_HANDLER_QUERY,
-                            q -> q.addParameter(name).executeDelete());
+                    SqlQueryBuilder delete =
+                            SqlQueryBuilder.create()
+                                    .raw("DELETE FROM meta_event_handler")
+                                    .where("name = :name")
+                                    .bind("name", name);
+
+                    execute(tx, delete, QueryContext.write("meta_event_handler"));
                 });
     }
 
     @Override
     public List<EventHandler> getAllEventHandlers() {
-        final String READ_ALL_EVENT_HANDLER_QUERY = "SELECT json_data FROM meta_event_handler";
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create().select("json_data").from("meta_event_handler");
         return queryWithTransaction(
-                READ_ALL_EVENT_HANDLER_QUERY, q -> q.executeAndFetch(EventHandler.class));
+                builder,
+                QueryContext.read("meta_event_handler"),
+                q -> q.executeAndFetch(EventHandler.class));
     }
 
     @Override
     public List<EventHandler> getEventHandlersForEvent(String event, boolean activeOnly) {
-        final String READ_ALL_EVENT_HANDLER_BY_EVENT_QUERY =
-                "SELECT json_data FROM meta_event_handler WHERE event = ?";
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .select("json_data")
+                        .from("meta_event_handler")
+                        .where("event = :event")
+                        .bind("event", event);
         return queryWithTransaction(
-                READ_ALL_EVENT_HANDLER_BY_EVENT_QUERY,
+                builder,
+                QueryContext.read("meta_event_handler"),
                 q -> {
-                    q.addParameter(event);
                     return q.executeAndFetch(
                             rs -> {
                                 List<EventHandler> handlers = new ArrayList<>();
@@ -359,13 +397,18 @@ public class MySQLMetadataDAO extends MySQLBaseDAO implements MetadataDAO, Event
      * @return {@literal null} if nothing is found, otherwise the {@code EventHandler}.
      */
     private EventHandler getEventHandler(Connection connection, String name) {
-        final String READ_ONE_EVENT_HANDLER_QUERY =
-                "SELECT json_data FROM meta_event_handler WHERE name = ?";
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .select("json_data")
+                        .from("meta_event_handler")
+                        .where("name = :name")
+                        .bind("name", name);
 
         return query(
                 connection,
-                READ_ONE_EVENT_HANDLER_QUERY,
-                q -> q.addParameter(name).executeAndFetchFirst(EventHandler.class));
+                builder,
+                QueryContext.read("meta_event_handler"),
+                q -> q.executeAndFetchFirst(EventHandler.class));
     }
 
     /**
@@ -377,13 +420,16 @@ public class MySQLMetadataDAO extends MySQLBaseDAO implements MetadataDAO, Event
      * @return {@literal true} if a {@code WorkflowDef} already exists with the same values.
      */
     private Boolean workflowExists(Connection connection, WorkflowDef def) {
-        final String CHECK_WORKFLOW_DEF_EXISTS_QUERY =
-                "SELECT COUNT(*) FROM meta_workflow_def WHERE name = ? AND " + "version = ?";
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .select("COUNT(*)")
+                        .from("meta_workflow_def")
+                        .where("name = :name")
+                        .and("version = :version")
+                        .bind("name", def.getName())
+                        .bind("version", def.getVersion());
 
-        return query(
-                connection,
-                CHECK_WORKFLOW_DEF_EXISTS_QUERY,
-                q -> q.addParameter(def.getName()).addParameter(def.getVersion()).exists());
+        return query(connection, builder, QueryContext.read("meta_workflow_def"), q -> q.exists());
     }
 
     /**
@@ -395,24 +441,27 @@ public class MySQLMetadataDAO extends MySQLBaseDAO implements MetadataDAO, Event
      *     WorkflowDef#getVersion} found.
      */
     private Optional<Integer> getLatestVersion(Connection tx, String name) {
-        final String GET_LATEST_WORKFLOW_DEF_VERSION =
-                "SELECT max(version) AS version FROM meta_workflow_def WHERE " + "name = ?";
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .select("max(version) AS version")
+                        .from("meta_workflow_def")
+                        .where("name = :name")
+                        .bind("name", name);
 
         Integer val =
                 query(
                         tx,
-                        GET_LATEST_WORKFLOW_DEF_VERSION,
-                        q -> {
-                            q.addParameter(name);
-                            return q.executeAndFetch(
-                                    rs -> {
-                                        if (!rs.next()) {
-                                            return null;
-                                        }
+                        builder,
+                        QueryContext.read("meta_workflow_def"),
+                        q ->
+                                q.executeAndFetch(
+                                        rs -> {
+                                            if (!rs.next()) {
+                                                return null;
+                                            }
 
-                                        return rs.getInt(1);
-                                    });
-                        });
+                                            return rs.getInt(1);
+                                        }));
 
         return Optional.ofNullable(val);
     }
@@ -426,45 +475,38 @@ public class MySQLMetadataDAO extends MySQLBaseDAO implements MetadataDAO, Event
      * @param version The new latest {@code version} value.
      */
     private void updateLatestVersion(Connection tx, String name, int version) {
-        final String UPDATE_WORKFLOW_DEF_LATEST_VERSION_QUERY =
-                "UPDATE meta_workflow_def SET latest_version = ? " + "WHERE name = ?";
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .raw("UPDATE meta_workflow_def SET latest_version = :version")
+                        .where("name = :name")
+                        .bind("version", version)
+                        .bind("name", name);
 
-        execute(
-                tx,
-                UPDATE_WORKFLOW_DEF_LATEST_VERSION_QUERY,
-                q -> q.addParameter(version).addParameter(name).executeUpdate());
+        execute(tx, builder, QueryContext.write("meta_workflow_def"));
     }
 
     private void insertOrUpdateWorkflowDef(Connection tx, WorkflowDef def) {
-        final String INSERT_WORKFLOW_DEF_QUERY =
-                "INSERT INTO meta_workflow_def (name, version, json_data) VALUES (?," + " ?, ?)";
-
         Optional<Integer> version = getLatestVersion(tx, def.getName());
         if (!workflowExists(tx, def)) {
-            execute(
-                    tx,
-                    INSERT_WORKFLOW_DEF_QUERY,
-                    q ->
-                            q.addParameter(def.getName())
-                                    .addParameter(def.getVersion())
-                                    .addJsonParameter(def)
-                                    .executeUpdate());
+            SqlInsertBuilder insert =
+                    SqlInsertBuilder.create()
+                            .into("meta_workflow_def")
+                            .column("name", def.getName())
+                            .column("version", def.getVersion())
+                            .column("json_data", toJson(def));
+            execute(tx, insert, QueryContext.write("meta_workflow_def"));
         } else {
-            // @formatter:off
-            final String UPDATE_WORKFLOW_DEF_QUERY =
-                    "UPDATE meta_workflow_def "
-                            + "SET json_data = ?, modified_on = CURRENT_TIMESTAMP "
-                            + "WHERE name = ? AND version = ?";
-            // @formatter:on
+            SqlQueryBuilder update =
+                    SqlQueryBuilder.create()
+                            .raw(
+                                    "UPDATE meta_workflow_def SET json_data = :jsonData, modified_on = CURRENT_TIMESTAMP")
+                            .where("name = :name")
+                            .and("version = :version")
+                            .bind("jsonData", toJson(def))
+                            .bind("name", def.getName())
+                            .bind("version", def.getVersion());
 
-            execute(
-                    tx,
-                    UPDATE_WORKFLOW_DEF_QUERY,
-                    q ->
-                            q.addJsonParameter(def)
-                                    .addParameter(def.getName())
-                                    .addParameter(def.getVersion())
-                                    .executeUpdate());
+            execute(tx, update, QueryContext.write("meta_workflow_def"));
         }
         int maxVersion = def.getVersion();
         if (version.isPresent() && version.get() > def.getVersion()) {
@@ -507,9 +549,14 @@ public class MySQLMetadataDAO extends MySQLBaseDAO implements MetadataDAO, Event
      * @return A new {@code List<TaskDef>} with all the {@code TaskDef} data that was retrieved.
      */
     private List<TaskDef> findAllTaskDefs(Connection tx) {
-        final String READ_ALL_TASKDEF_QUERY = "SELECT json_data FROM meta_task_def";
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create().select("json_data").from("meta_task_def");
 
-        return query(tx, READ_ALL_TASKDEF_QUERY, q -> q.executeAndFetch(TaskDef.class));
+        return query(
+                tx,
+                builder,
+                QueryContext.read("meta_task_def"),
+                q -> q.executeAndFetch(TaskDef.class));
     }
 
     /**
@@ -519,40 +566,38 @@ public class MySQLMetadataDAO extends MySQLBaseDAO implements MetadataDAO, Event
      * @return {@literal null} if nothing is found, otherwise the {@code TaskDef}.
      */
     private TaskDef getTaskDefFromDB(String name) {
-        final String READ_ONE_TASKDEF_QUERY = "SELECT json_data FROM meta_task_def WHERE name = ?";
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .select("json_data")
+                        .from("meta_task_def")
+                        .where("name = :name")
+                        .bind("name", name);
 
         return queryWithTransaction(
-                READ_ONE_TASKDEF_QUERY,
-                q -> q.addParameter(name).executeAndFetchFirst(TaskDef.class));
+                builder,
+                QueryContext.read("meta_task_def"),
+                q -> q.executeAndFetchFirst(TaskDef.class));
     }
 
     private String insertOrUpdateTaskDef(TaskDef taskDef) {
-        final String UPDATE_TASKDEF_QUERY =
-                "UPDATE meta_task_def SET json_data = ?, modified_on = CURRENT_TIMESTAMP WHERE name = ?";
-
-        final String INSERT_TASKDEF_QUERY =
-                "INSERT INTO meta_task_def (name, json_data) VALUES (?, ?)";
-
         return getWithRetriedTransactions(
                 tx -> {
-                    execute(
-                            tx,
-                            UPDATE_TASKDEF_QUERY,
-                            update -> {
-                                int result =
-                                        update.addJsonParameter(taskDef)
-                                                .addParameter(taskDef.getName())
-                                                .executeUpdate();
-                                if (result == 0) {
-                                    execute(
-                                            tx,
-                                            INSERT_TASKDEF_QUERY,
-                                            insert ->
-                                                    insert.addParameter(taskDef.getName())
-                                                            .addJsonParameter(taskDef)
-                                                            .executeUpdate());
-                                }
-                            });
+                    SqlQueryBuilder update =
+                            SqlQueryBuilder.create()
+                                    .raw(
+                                            "UPDATE meta_task_def SET json_data = :jsonData, modified_on = CURRENT_TIMESTAMP")
+                                    .where("name = :name")
+                                    .bind("jsonData", toJson(taskDef))
+                                    .bind("name", taskDef.getName());
+                    int result = execute(tx, update, QueryContext.write("meta_task_def"));
+                    if (result == 0) {
+                        SqlInsertBuilder insert =
+                                SqlInsertBuilder.create()
+                                        .into("meta_task_def")
+                                        .column("name", taskDef.getName())
+                                        .column("json_data", toJson(taskDef));
+                        execute(tx, insert, QueryContext.write("meta_task_def"));
+                    }
 
                     taskDefCache.put(taskDef.getName(), taskDef);
                     return taskDef.getName();

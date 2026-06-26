@@ -23,6 +23,9 @@ import java.util.function.Consumer;
 
 import javax.sql.DataSource;
 
+import org.conductoross.conductor.persistence.query.QueryContext;
+import org.conductoross.conductor.persistence.query.SqlInsertBuilder;
+import org.conductoross.conductor.persistence.query.SqlQueryBuilder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.retry.support.RetryTemplate;
@@ -252,5 +255,80 @@ public abstract class MySQLBaseDAO {
      */
     protected void executeWithTransaction(String query, ExecuteFunction function) {
         withTransaction(tx -> execute(tx, query, function));
+    }
+
+    // --- Generic query-extension seams (P2: feature-agnostic; no-op in OSS) ---
+    // Mirror of the Postgres adapter: an enterprise subclass can decorate every read/write (e.g.
+    // append an org_id filter or column) without OSS knowing org/tenant concepts.
+
+    /**
+     * Invoked immediately before a read/update/delete query is rendered. No-op in OSS. Subclasses
+     * may append predicates/binds (e.g. {@code query.and("org_id = :orgId").bind(...)}).
+     */
+    protected void applyQueryExtensions(SqlQueryBuilder query, QueryContext context) {
+        // no-op in OSS
+    }
+
+    /**
+     * Invoked immediately before an insert/upsert is rendered. No-op in OSS. Subclasses may add
+     * columns (e.g. {@code org_id}).
+     */
+    protected void applyWriteExtensions(SqlInsertBuilder insert, QueryContext context) {
+        // no-op in OSS
+    }
+
+    /**
+     * Builds and runs a read query through {@link SqlQueryBuilder}, invoking {@link
+     * #applyQueryExtensions(SqlQueryBuilder, QueryContext)} immediately before render.
+     */
+    protected <R> R query(
+            Connection tx,
+            SqlQueryBuilder builder,
+            QueryContext context,
+            QueryFunction<R> function) {
+        applyQueryExtensions(builder, context);
+        SqlQueryBuilder.Rendered rendered = builder.render();
+        return query(
+                tx,
+                rendered.sql(),
+                q -> function.apply(q.addParameters(rendered.binds().toArray())));
+    }
+
+    /**
+     * Transactional variant of {@link #query(Connection, SqlQueryBuilder, QueryContext,
+     * QueryFunction)}.
+     */
+    protected <R> R queryWithTransaction(
+            SqlQueryBuilder builder, QueryContext context, QueryFunction<R> function) {
+        return getWithRetriedTransactions(tx -> query(tx, builder, context, function));
+    }
+
+    /**
+     * Builds and runs an {@code UPDATE}/{@code DELETE} through {@link SqlQueryBuilder}, invoking
+     * the read-extension hook so a subclass can scope the {@code WHERE}. Returns the affected row
+     * count.
+     */
+    protected int execute(Connection tx, SqlQueryBuilder builder, QueryContext context) {
+        return query(tx, builder, context, q -> q.executeUpdate());
+    }
+
+    /**
+     * Builds and runs an insert/upsert through {@link SqlInsertBuilder} (rendered with the MySQL
+     * dialect), invoking {@link #applyWriteExtensions(SqlInsertBuilder, QueryContext)} immediately
+     * before render. Returns the affected row count.
+     */
+    protected int execute(Connection tx, SqlInsertBuilder builder, QueryContext context) {
+        builder.dialect(SqlInsertBuilder.Dialect.MYSQL);
+        applyWriteExtensions(builder, context);
+        SqlInsertBuilder.Rendered rendered = builder.render();
+        return query(
+                tx,
+                rendered.sql(),
+                q -> q.addParameters(rendered.binds().toArray()).executeUpdate());
+    }
+
+    /** Transactional variant of {@link #execute(Connection, SqlInsertBuilder, QueryContext)}. */
+    protected int executeWithTransaction(SqlInsertBuilder builder, QueryContext context) {
+        return getWithRetriedTransactions(tx -> execute(tx, builder, context));
     }
 }

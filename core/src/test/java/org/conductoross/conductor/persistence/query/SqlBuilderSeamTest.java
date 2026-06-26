@@ -154,6 +154,49 @@ class SqlBuilderSeamTest {
     }
 
     @Test
+    void writeSeam_mysqlInsertIgnoreComposesOrgColumn() {
+        SqlInsertBuilder ib =
+                SqlInsertBuilder.create()
+                        .dialect(SqlInsertBuilder.Dialect.MYSQL)
+                        .into("workflow_pending")
+                        .column("workflow_type", "wf")
+                        .column("workflow_id", "w1")
+                        .onConflictDoNothing();
+        // Enterprise adds org_id column; MySQL ignores explicit conflict targets (unique key
+        // implied).
+        ib.column("org_id", "acme");
+
+        SqlInsertBuilder.Rendered r = ib.render();
+        assertEquals(
+                "INSERT IGNORE INTO workflow_pending (workflow_type, workflow_id, org_id) VALUES (?, ?, ?)",
+                r.sql());
+        assertEquals(List.of("wf", "w1", "acme"), r.binds());
+    }
+
+    @Test
+    void writeSeam_mysqlOnDuplicateKeyUpdateComposesOrgColumn() {
+        SqlInsertBuilder ib =
+                SqlInsertBuilder.create()
+                        .dialect(SqlInsertBuilder.Dialect.MYSQL)
+                        .into("task")
+                        .column("task_id", "t1")
+                        .column("json_data", "{}")
+                        .columnRaw("modified_on", "CURRENT_TIMESTAMP")
+                        .doUpdateSet(
+                                "json_data = VALUES(json_data)",
+                                "modified_on = VALUES(modified_on)");
+        ib.column("org_id", "acme");
+
+        SqlInsertBuilder.Rendered r = ib.render();
+        assertEquals(
+                "INSERT INTO task (task_id, json_data, modified_on, org_id) "
+                        + "VALUES (?, ?, CURRENT_TIMESTAMP, ?) "
+                        + "ON DUPLICATE KEY UPDATE json_data = VALUES(json_data), modified_on = VALUES(modified_on)",
+                r.sql());
+        assertEquals(List.of("t1", "{}", "acme"), r.binds());
+    }
+
+    @Test
     void writeSeam_ossOnlyHasNoOrgConcept() {
         // With no decorator (OSS running standalone), the insert is unchanged.
         SqlInsertBuilder ib =

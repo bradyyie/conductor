@@ -23,11 +23,13 @@ import java.util.stream.Collectors;
 
 import javax.sql.DataSource;
 
+import org.conductoross.conductor.persistence.query.QueryContext;
+import org.conductoross.conductor.persistence.query.SqlInsertBuilder;
+import org.conductoross.conductor.persistence.query.SqlQueryBuilder;
 import org.springframework.retry.support.RetryTemplate;
 
 import com.netflix.conductor.core.events.queue.Message;
 import com.netflix.conductor.dao.QueueDAO;
-import com.netflix.conductor.mysql.util.Query;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.collect.ImmutableMap;
@@ -97,13 +99,19 @@ public class MySQLQueueDAO extends MySQLBaseDAO implements QueueDAO {
 
     @Override
     public List<String> peekFirstIds(String queueName, int count) {
-        final String SQL =
-                "SELECT message_id FROM queue_message "
-                        + "WHERE queue_name = ? AND popped = false "
-                        + "ORDER BY deliver_on, priority DESC, created_on LIMIT ?";
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .select("message_id")
+                        .from("queue_message")
+                        .where("queue_name = :queueName")
+                        .and("popped = false")
+                        .bind("queueName", queueName)
+                        .orderBy("deliver_on", "priority DESC", "created_on")
+                        .limit(count);
         return queryWithTransaction(
-                SQL,
-                q -> q.addParameter(queueName).addParameter(count).executeScalarList(String.class));
+                builder,
+                QueryContext.read("queue_message"),
+                q -> q.executeScalarList(String.class));
     }
 
     @Override
@@ -135,9 +143,16 @@ public class MySQLQueueDAO extends MySQLBaseDAO implements QueueDAO {
 
     @Override
     public int getSize(String queueName) {
-        final String GET_QUEUE_SIZE = "SELECT COUNT(*) FROM queue_message WHERE queue_name = ?";
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .select("COUNT(*)")
+                        .from("queue_message")
+                        .where("queue_name = :queueName")
+                        .bind("queueName", queueName);
         return queryWithTransaction(
-                GET_QUEUE_SIZE, q -> ((Long) q.addParameter(queueName).executeCount()).intValue());
+                builder,
+                QueryContext.read("queue_message"),
+                q -> ((Long) q.executeCount()).intValue());
     }
 
     @Override
@@ -149,17 +164,18 @@ public class MySQLQueueDAO extends MySQLBaseDAO implements QueueDAO {
     public boolean setUnackTimeout(String queueName, String messageId, long unackTimeout) {
         long updatedOffsetTimeInSecond = unackTimeout / 1000;
 
-        final String UPDATE_UNACK_TIMEOUT =
-                "UPDATE queue_message SET offset_time_seconds = ?, deliver_on = TIMESTAMPADD(SECOND, ?, CURRENT_TIMESTAMP) WHERE queue_name = ? AND message_id = ?";
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .raw(
+                                "UPDATE queue_message SET offset_time_seconds = :offset, deliver_on = TIMESTAMPADD(SECOND, :offset, CURRENT_TIMESTAMP)")
+                        .where("queue_name = :queueName")
+                        .and("message_id = :messageId")
+                        .bind("offset", updatedOffsetTimeInSecond)
+                        .bind("queueName", queueName)
+                        .bind("messageId", messageId);
 
         return queryWithTransaction(
-                        UPDATE_UNACK_TIMEOUT,
-                        q ->
-                                q.addParameter(updatedOffsetTimeInSecond)
-                                        .addParameter(updatedOffsetTimeInSecond)
-                                        .addParameter(queueName)
-                                        .addParameter(messageId)
-                                        .executeUpdate())
+                        builder, QueryContext.write("queue_message"), q -> q.executeUpdate())
                 == 1;
     }
 
@@ -169,34 +185,41 @@ public class MySQLQueueDAO extends MySQLBaseDAO implements QueueDAO {
 
         // Only update when the proposed deliver_on is earlier than what is already set,
         // mirroring the ZADD LT semantics used by the Redis implementation.
-        final String UPDATE_UNACK_TIMEOUT_IF_SHORTER =
-                "UPDATE queue_message SET offset_time_seconds = ?, deliver_on = TIMESTAMPADD(SECOND, ?, CURRENT_TIMESTAMP)"
-                        + " WHERE queue_name = ? AND message_id = ? AND deliver_on > TIMESTAMPADD(SECOND, ?, CURRENT_TIMESTAMP)";
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .raw(
+                                "UPDATE queue_message SET offset_time_seconds = :offset, deliver_on = TIMESTAMPADD(SECOND, :offset, CURRENT_TIMESTAMP)")
+                        .where("queue_name = :queueName")
+                        .and("message_id = :messageId")
+                        .and("deliver_on > TIMESTAMPADD(SECOND, :offset, CURRENT_TIMESTAMP)")
+                        .bind("offset", updatedOffsetTimeInSecond)
+                        .bind("queueName", queueName)
+                        .bind("messageId", messageId);
 
         return queryWithTransaction(
-                        UPDATE_UNACK_TIMEOUT_IF_SHORTER,
-                        q ->
-                                q.addParameter(updatedOffsetTimeInSecond)
-                                        .addParameter(updatedOffsetTimeInSecond)
-                                        .addParameter(queueName)
-                                        .addParameter(messageId)
-                                        .addParameter(updatedOffsetTimeInSecond)
-                                        .executeUpdate())
+                        builder, QueryContext.write("queue_message"), q -> q.executeUpdate())
                 == 1;
     }
 
     @Override
     public void flush(String queueName) {
-        final String FLUSH_QUEUE = "DELETE FROM queue_message WHERE queue_name = ?";
-        executeWithTransaction(FLUSH_QUEUE, q -> q.addParameter(queueName).executeDelete());
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .raw("DELETE FROM queue_message")
+                        .where("queue_name = :queueName")
+                        .bind("queueName", queueName);
+        withTransaction(tx -> execute(tx, builder, QueryContext.write("queue_message")));
     }
 
     @Override
     public Map<String, Long> queuesDetail() {
-        final String GET_QUEUES_DETAIL =
-                "SELECT queue_name, (SELECT count(*) FROM queue_message WHERE popped = false AND queue_name = q.queue_name) AS size FROM queue q";
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .raw(
+                                "SELECT queue_name, (SELECT count(*) FROM queue_message WHERE popped = false AND queue_name = q.queue_name) AS size FROM queue q");
         return queryWithTransaction(
-                GET_QUEUES_DETAIL,
+                builder,
+                QueryContext.read("queue"),
                 q ->
                         q.executeAndFetch(
                                 rs -> {
@@ -213,15 +236,18 @@ public class MySQLQueueDAO extends MySQLBaseDAO implements QueueDAO {
     @Override
     public Map<String, Map<String, Map<String, Long>>> queuesDetailVerbose() {
         // @formatter:off
-        final String GET_QUEUES_DETAIL_VERBOSE =
-                "SELECT queue_name, \n"
-                        + "       (SELECT count(*) FROM queue_message WHERE popped = false AND queue_name = q.queue_name) AS size,\n"
-                        + "       (SELECT count(*) FROM queue_message WHERE popped = true AND queue_name = q.queue_name) AS uacked \n"
-                        + "FROM queue q";
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .raw(
+                                "SELECT queue_name, \n"
+                                        + "       (SELECT count(*) FROM queue_message WHERE popped = false AND queue_name = q.queue_name) AS size,\n"
+                                        + "       (SELECT count(*) FROM queue_message WHERE popped = true AND queue_name = q.queue_name) AS uacked \n"
+                                        + "FROM queue q");
         // @formatter:on
 
         return queryWithTransaction(
-                GET_QUEUES_DETAIL_VERBOSE,
+                builder,
+                QueryContext.read("queue"),
                 q ->
                         q.executeAndFetch(
                                 rs -> {
@@ -258,43 +284,54 @@ public class MySQLQueueDAO extends MySQLBaseDAO implements QueueDAO {
 
         logger.trace("processAllUnacks started");
 
-        final String PROCESS_ALL_UNACKS =
-                "UPDATE queue_message SET popped = false WHERE popped = true AND TIMESTAMPADD(SECOND,-60,CURRENT_TIMESTAMP) > deliver_on";
-        executeWithTransaction(PROCESS_ALL_UNACKS, Query::executeUpdate);
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .raw("UPDATE queue_message SET popped = false")
+                        .where("popped = true")
+                        .and("TIMESTAMPADD(SECOND, -60, CURRENT_TIMESTAMP) > deliver_on");
+        withTransaction(tx -> execute(tx, builder, QueryContext.write("queue_message")));
     }
 
     @Override
     public void processUnacks(String queueName) {
-        final String PROCESS_UNACKS =
-                "UPDATE queue_message SET popped = false WHERE queue_name = ? AND popped = true AND TIMESTAMPADD(SECOND,-60,CURRENT_TIMESTAMP)  > deliver_on";
-        executeWithTransaction(PROCESS_UNACKS, q -> q.addParameter(queueName).executeUpdate());
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .raw("UPDATE queue_message SET popped = false")
+                        .where("queue_name = :queueName")
+                        .and("popped = true")
+                        .and("TIMESTAMPADD(SECOND, -60, CURRENT_TIMESTAMP) > deliver_on")
+                        .bind("queueName", queueName);
+        withTransaction(tx -> execute(tx, builder, QueryContext.write("queue_message")));
     }
 
     @Override
     public boolean resetOffsetTime(String queueName, String messageId) {
         long offsetTimeInSecond = 0; // Reset to 0
-        final String SET_OFFSET_TIME =
-                "UPDATE queue_message SET offset_time_seconds = ?, deliver_on = TIMESTAMPADD(SECOND,?,CURRENT_TIMESTAMP) \n"
-                        + "WHERE queue_name = ? AND message_id = ?";
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .raw(
+                                "UPDATE queue_message SET offset_time_seconds = :offset, deliver_on = TIMESTAMPADD(SECOND, :offset, CURRENT_TIMESTAMP)")
+                        .where("queue_name = :queueName")
+                        .and("message_id = :messageId")
+                        .bind("offset", offsetTimeInSecond)
+                        .bind("queueName", queueName)
+                        .bind("messageId", messageId);
 
         return queryWithTransaction(
-                SET_OFFSET_TIME,
-                q ->
-                        q.addParameter(offsetTimeInSecond)
-                                        .addParameter(offsetTimeInSecond)
-                                        .addParameter(queueName)
-                                        .addParameter(messageId)
-                                        .executeUpdate()
-                                == 1);
+                        builder, QueryContext.write("queue_message"), q -> q.executeUpdate())
+                == 1;
     }
 
     private boolean existsMessage(Connection connection, String queueName, String messageId) {
-        final String EXISTS_MESSAGE =
-                "SELECT EXISTS(SELECT 1 FROM queue_message WHERE queue_name = ? AND message_id = ?)";
-        return query(
-                connection,
-                EXISTS_MESSAGE,
-                q -> q.addParameter(queueName).addParameter(messageId).exists());
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .select("1")
+                        .from("queue_message")
+                        .where("queue_name = :queueName")
+                        .and("message_id = :messageId")
+                        .bind("queueName", queueName)
+                        .bind("messageId", messageId);
+        return query(connection, builder, QueryContext.read("queue_message"), q -> q.exists());
     }
 
     private void pushMessage(
@@ -307,43 +344,47 @@ public class MySQLQueueDAO extends MySQLBaseDAO implements QueueDAO {
 
         createQueueIfNotExists(connection, queueName);
 
-        String UPDATE_MESSAGE =
-                "UPDATE queue_message SET payload=?, deliver_on=TIMESTAMPADD(SECOND,?,CURRENT_TIMESTAMP) WHERE queue_name = ? AND message_id = ?";
-        int rowsUpdated =
-                query(
-                        connection,
-                        UPDATE_MESSAGE,
-                        q ->
-                                q.addParameter(payload)
-                                        .addParameter(offsetTimeInSecond)
-                                        .addParameter(queueName)
-                                        .addParameter(messageId)
-                                        .executeUpdate());
+        SqlQueryBuilder update =
+                SqlQueryBuilder.create()
+                        .raw(
+                                "UPDATE queue_message SET payload = :payload, deliver_on = TIMESTAMPADD(SECOND, :offset, CURRENT_TIMESTAMP)")
+                        .where("queue_name = :queueName")
+                        .and("message_id = :messageId")
+                        .bind("payload", payload)
+                        .bind("offset", offsetTimeInSecond)
+                        .bind("queueName", queueName)
+                        .bind("messageId", messageId);
+        int rowsUpdated = execute(connection, update, QueryContext.write("queue_message"));
 
         if (rowsUpdated == 0) {
-            String PUSH_MESSAGE =
-                    "INSERT INTO queue_message (deliver_on, queue_name, message_id, priority, offset_time_seconds, payload) VALUES (TIMESTAMPADD(SECOND,?,CURRENT_TIMESTAMP), ?, ?,?,?,?) ON DUPLICATE KEY UPDATE payload=VALUES(payload), deliver_on=VALUES(deliver_on)";
-            execute(
-                    connection,
-                    PUSH_MESSAGE,
-                    q ->
-                            q.addParameter(offsetTimeInSecond)
-                                    .addParameter(queueName)
-                                    .addParameter(messageId)
-                                    .addParameter(priority)
-                                    .addParameter(offsetTimeInSecond)
-                                    .addParameter(payload)
-                                    .executeUpdate());
+            SqlInsertBuilder insert =
+                    SqlInsertBuilder.create()
+                            .into("queue_message")
+                            .columnRaw(
+                                    "deliver_on",
+                                    "TIMESTAMPADD(SECOND, ?, CURRENT_TIMESTAMP)",
+                                    List.of(offsetTimeInSecond))
+                            .column("queue_name", queueName)
+                            .column("message_id", messageId)
+                            .column("priority", priority)
+                            .column("offset_time_seconds", offsetTimeInSecond)
+                            .column("payload", payload)
+                            .doUpdateSet(
+                                    "payload = VALUES(payload)", "deliver_on = VALUES(deliver_on)");
+            execute(connection, insert, QueryContext.write("queue_message"));
         }
     }
 
     private boolean removeMessage(Connection connection, String queueName, String messageId) {
-        final String REMOVE_MESSAGE =
-                "DELETE FROM queue_message WHERE queue_name = ? AND message_id = ?";
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .raw("DELETE FROM queue_message")
+                        .where("queue_name = :queueName")
+                        .and("message_id = :messageId")
+                        .bind("queueName", queueName)
+                        .bind("messageId", messageId);
         return query(
-                connection,
-                REMOVE_MESSAGE,
-                q -> q.addParameter(queueName).addParameter(messageId).executeDelete());
+                connection, builder, QueryContext.write("queue_message"), q -> q.executeDelete());
     }
 
     private List<Message> peekMessages(Connection connection, String queueName, int count) {
@@ -351,27 +392,34 @@ public class MySQLQueueDAO extends MySQLBaseDAO implements QueueDAO {
             return Collections.emptyList();
         }
 
-        final String PEEK_MESSAGES =
-                "SELECT message_id, priority, payload FROM queue_message use index(combo_queue_message) WHERE queue_name = ? AND popped = false AND deliver_on <= TIMESTAMPADD(MICROSECOND, 1000, CURRENT_TIMESTAMP) ORDER BY priority DESC, deliver_on, created_on LIMIT ?";
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .select("message_id", "priority", "payload")
+                        .from("queue_message use index(combo_queue_message)")
+                        .where("queue_name = :queueName")
+                        .and("popped = false")
+                        .and("deliver_on <= TIMESTAMPADD(MICROSECOND, 1000, CURRENT_TIMESTAMP)")
+                        .bind("queueName", queueName)
+                        .orderBy("priority DESC", "deliver_on", "created_on")
+                        .limit(count);
 
         return query(
                 connection,
-                PEEK_MESSAGES,
+                builder,
+                QueryContext.read("queue_message"),
                 p ->
-                        p.addParameter(queueName)
-                                .addParameter(count)
-                                .executeAndFetch(
-                                        rs -> {
-                                            List<Message> results = new ArrayList<>();
-                                            while (rs.next()) {
-                                                Message m = new Message();
-                                                m.setId(rs.getString("message_id"));
-                                                m.setPriority(rs.getInt("priority"));
-                                                m.setPayload(rs.getString("payload"));
-                                                results.add(m);
-                                            }
-                                            return results;
-                                        }));
+                        p.executeAndFetch(
+                                rs -> {
+                                    List<Message> results = new ArrayList<>();
+                                    while (rs.next()) {
+                                        Message m = new Message();
+                                        m.setId(rs.getString("message_id"));
+                                        m.setPriority(rs.getInt("priority"));
+                                        m.setPayload(rs.getString("payload"));
+                                        results.add(m);
+                                    }
+                                    return results;
+                                }));
     }
 
     private List<Message> popMessages(
@@ -390,16 +438,15 @@ public class MySQLQueueDAO extends MySQLBaseDAO implements QueueDAO {
 
         List<Message> poppedMessages = new ArrayList<>();
         for (Message message : messages) {
-            final String POP_MESSAGE =
-                    "UPDATE queue_message SET popped = true WHERE queue_name = ? AND message_id = ? AND popped = false";
-            int result =
-                    query(
-                            connection,
-                            POP_MESSAGE,
-                            q ->
-                                    q.addParameter(queueName)
-                                            .addParameter(message.getId())
-                                            .executeUpdate());
+            SqlQueryBuilder builder =
+                    SqlQueryBuilder.create()
+                            .raw("UPDATE queue_message SET popped = true")
+                            .where("queue_name = :queueName")
+                            .and("message_id = :messageId")
+                            .and("popped = false")
+                            .bind("queueName", queueName)
+                            .bind("messageId", message.getId());
+            int result = execute(connection, builder, QueryContext.write("queue_message"));
 
             if (result == 1) {
                 poppedMessages.add(message);
@@ -410,19 +457,34 @@ public class MySQLQueueDAO extends MySQLBaseDAO implements QueueDAO {
 
     private void createQueueIfNotExists(Connection connection, String queueName) {
         logger.trace("Creating new queue '{}'", queueName);
-        final String EXISTS_QUEUE = "SELECT EXISTS(SELECT 1 FROM queue WHERE queue_name = ?)";
-        boolean exists = query(connection, EXISTS_QUEUE, q -> q.addParameter(queueName).exists());
+        SqlQueryBuilder existsQuery =
+                SqlQueryBuilder.create()
+                        .select("1")
+                        .from("queue")
+                        .where("queue_name = :queueName")
+                        .bind("queueName", queueName);
+        boolean exists =
+                query(connection, existsQuery, QueryContext.read("queue"), q -> q.exists());
         if (!exists) {
-            final String CREATE_QUEUE = "INSERT IGNORE INTO queue (queue_name) VALUES (?)";
-            execute(connection, CREATE_QUEUE, q -> q.addParameter(queueName).executeUpdate());
+            SqlInsertBuilder insert =
+                    SqlInsertBuilder.create()
+                            .into("queue")
+                            .column("queue_name", queueName)
+                            .onConflictDoNothing();
+            execute(connection, insert, QueryContext.write("queue"));
         }
     }
 
     @Override
     public boolean containsMessage(String queueName, String messageId) {
-        final String EXISTS_QUEUE =
-                "SELECT EXISTS(SELECT 1 FROM queue_message WHERE queue_name = ? AND message_id = ? )";
-        return queryWithTransaction(
-                EXISTS_QUEUE, q -> q.addParameter(queueName).addParameter(messageId).exists());
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .select("1")
+                        .from("queue_message")
+                        .where("queue_name = :queueName")
+                        .and("message_id = :messageId")
+                        .bind("queueName", queueName)
+                        .bind("messageId", messageId);
+        return queryWithTransaction(builder, QueryContext.read("queue_message"), q -> q.exists());
     }
 }

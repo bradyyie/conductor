@@ -32,7 +32,16 @@ import java.util.Map;
  */
 public final class SqlInsertBuilder {
 
+    /** SQL dialect for upsert rendering. */
+    public enum Dialect {
+        /** {@code ON CONFLICT (...) DO NOTHING | DO UPDATE SET ...} (Postgres/SQLite). */
+        POSTGRES,
+        /** {@code INSERT IGNORE ...} / {@code ... ON DUPLICATE KEY UPDATE ...} (MySQL). */
+        MYSQL
+    }
+
     private String table;
+    private Dialect dialect = Dialect.POSTGRES;
     private final Map<String, ColumnValue> columns = new LinkedHashMap<>();
     private final List<String> conflictTargets = new ArrayList<>();
     private final List<String> updateAssignments = new ArrayList<>();
@@ -48,6 +57,12 @@ public final class SqlInsertBuilder {
 
     public static SqlInsertBuilder create() {
         return new SqlInsertBuilder();
+    }
+
+    /** Selects the upsert dialect (default {@link Dialect#POSTGRES}). */
+    public SqlInsertBuilder dialect(Dialect dialect) {
+        this.dialect = dialect;
+        return this;
     }
 
     public SqlInsertBuilder into(String table) {
@@ -125,8 +140,7 @@ public final class SqlInsertBuilder {
             throw new IllegalStateException("INSERT requires a table and at least one column");
         }
         List<Object> binds = new ArrayList<>();
-        StringBuilder sql = new StringBuilder("INSERT INTO ").append(table).append(" (");
-        sql.append(String.join(", ", columns.keySet())).append(") VALUES (");
+        String columnList = String.join(", ", columns.keySet());
         StringBuilder placeholders = new StringBuilder();
         for (ColumnValue column : columns.values()) {
             if (placeholders.length() > 0) {
@@ -140,20 +154,36 @@ public final class SqlInsertBuilder {
                 binds.add(column.value());
             }
         }
-        sql.append(placeholders).append(")");
-        if (!conflictTargets.isEmpty()) {
-            sql.append(" ON CONFLICT (").append(String.join(", ", conflictTargets)).append(")");
-            if (doNothingOnConflict || updateAssignments.isEmpty()) {
-                sql.append(" DO NOTHING");
-            } else {
-                sql.append(" DO UPDATE SET ").append(String.join(", ", updateAssignments));
+
+        StringBuilder sql = new StringBuilder();
+        if (dialect == Dialect.MYSQL) {
+            // MySQL: do-nothing => INSERT IGNORE; upsert => ON DUPLICATE KEY UPDATE (conflict
+            // targets are implied by the table's unique keys, so they are not emitted).
+            sql.append(doNothingOnConflict ? "INSERT IGNORE INTO " : "INSERT INTO ");
+            sql.append(table).append(" (").append(columnList).append(") VALUES (");
+            sql.append(placeholders).append(")");
+            if (!doNothingOnConflict && !updateAssignments.isEmpty()) {
+                sql.append(" ON DUPLICATE KEY UPDATE ")
+                        .append(String.join(", ", updateAssignments));
                 binds.addAll(updateBinds);
             }
-        } else if (doNothingOnConflict) {
-            // Target-less ON CONFLICT DO NOTHING (e.g. event_execution): fires on any unique
-            // violation. Composes with an enterprise org_id column without needing a conflict
-            // target.
-            sql.append(" ON CONFLICT DO NOTHING");
+        } else {
+            sql.append("INSERT INTO ").append(table).append(" (").append(columnList);
+            sql.append(") VALUES (").append(placeholders).append(")");
+            if (!conflictTargets.isEmpty()) {
+                sql.append(" ON CONFLICT (").append(String.join(", ", conflictTargets)).append(")");
+                if (doNothingOnConflict || updateAssignments.isEmpty()) {
+                    sql.append(" DO NOTHING");
+                } else {
+                    sql.append(" DO UPDATE SET ").append(String.join(", ", updateAssignments));
+                    binds.addAll(updateBinds);
+                }
+            } else if (doNothingOnConflict) {
+                // Target-less ON CONFLICT DO NOTHING (e.g. event_execution): fires on any unique
+                // violation. Composes with an enterprise org_id column without needing a conflict
+                // target.
+                sql.append(" ON CONFLICT DO NOTHING");
+            }
         }
         return new Rendered(sql.toString(), binds);
     }
