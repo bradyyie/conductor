@@ -21,6 +21,9 @@ import java.util.stream.Collectors;
 
 import javax.sql.DataSource;
 
+import org.conductoross.conductor.persistence.query.QueryContext;
+import org.conductoross.conductor.persistence.query.SqlInsertBuilder;
+import org.conductoross.conductor.persistence.query.SqlQueryBuilder;
 import org.springframework.retry.support.RetryTemplate;
 
 import com.netflix.conductor.core.events.queue.Message;
@@ -28,7 +31,6 @@ import com.netflix.conductor.dao.QueueDAO;
 import com.netflix.conductor.postgres.config.PostgresProperties;
 import com.netflix.conductor.postgres.util.ExecutorsUtil;
 import com.netflix.conductor.postgres.util.PostgresQueueListener;
-import com.netflix.conductor.postgres.util.Query;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.collect.ImmutableMap;
@@ -138,13 +140,19 @@ public class PostgresQueueDAO extends PostgresBaseDAO implements QueueDAO {
 
     @Override
     public List<String> peekFirstIds(String queueName, int count) {
-        final String SQL =
-                "SELECT message_id FROM queue_message "
-                        + "WHERE queue_name = ? AND popped = false "
-                        + "ORDER BY deliver_on, priority DESC, created_on LIMIT ?";
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .select("message_id")
+                        .from("queue_message")
+                        .where("queue_name = :queueName")
+                        .and("popped = false")
+                        .bind("queueName", queueName)
+                        .orderBy("deliver_on", "priority DESC", "created_on")
+                        .limit(count);
         return queryWithTransaction(
-                SQL,
-                q -> q.addParameter(queueName).addParameter(count).executeScalarList(String.class));
+                builder,
+                QueryContext.read("queue_message"),
+                q -> q.executeScalarList(String.class));
     }
 
     @Override
@@ -198,9 +206,16 @@ public class PostgresQueueDAO extends PostgresBaseDAO implements QueueDAO {
             }
         }
 
-        final String GET_QUEUE_SIZE = "SELECT COUNT(*) FROM queue_message WHERE queue_name = ?";
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .select("COUNT(*)")
+                        .from("queue_message")
+                        .where("queue_name = :queueName")
+                        .bind("queueName", queueName);
         return queryWithTransaction(
-                GET_QUEUE_SIZE, q -> ((Long) q.addParameter(queueName).executeCount()).intValue());
+                builder,
+                QueryContext.read("queue_message"),
+                q -> ((Long) q.executeCount()).intValue());
     }
 
     @Override
@@ -212,17 +227,18 @@ public class PostgresQueueDAO extends PostgresBaseDAO implements QueueDAO {
     public boolean setUnackTimeout(String queueName, String messageId, long unackTimeout) {
         long updatedOffsetTimeInSecond = unackTimeout / 1000;
 
-        final String UPDATE_UNACK_TIMEOUT =
-                "UPDATE queue_message SET offset_time_seconds = ?, deliver_on = (current_timestamp + (? ||' seconds')::interval) WHERE queue_name = ? AND message_id = ?";
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .raw(
+                                "UPDATE queue_message SET offset_time_seconds = :offset, deliver_on = (current_timestamp + (:offset ||' seconds')::interval)")
+                        .where("queue_name = :queueName")
+                        .and("message_id = :messageId")
+                        .bind("offset", updatedOffsetTimeInSecond)
+                        .bind("queueName", queueName)
+                        .bind("messageId", messageId);
 
         return queryWithTransaction(
-                        UPDATE_UNACK_TIMEOUT,
-                        q ->
-                                q.addParameter(updatedOffsetTimeInSecond)
-                                        .addParameter(updatedOffsetTimeInSecond)
-                                        .addParameter(queueName)
-                                        .addParameter(messageId)
-                                        .executeUpdate())
+                        builder, QueryContext.write("queue_message"), q -> q.executeUpdate())
                 == 1;
     }
 
@@ -232,34 +248,42 @@ public class PostgresQueueDAO extends PostgresBaseDAO implements QueueDAO {
 
         // Only update when the proposed deliver_on is earlier than what is already set,
         // mirroring the ZADD LT semantics used by the Redis implementation.
-        final String UPDATE_UNACK_TIMEOUT_IF_SHORTER =
-                "UPDATE queue_message SET offset_time_seconds = ?, deliver_on = (current_timestamp + (? ||' seconds')::interval)"
-                        + " WHERE queue_name = ? AND message_id = ? AND deliver_on > (current_timestamp + (? ||' seconds')::interval)";
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .raw(
+                                "UPDATE queue_message SET offset_time_seconds = :offset, deliver_on = (current_timestamp + (:offset ||' seconds')::interval)")
+                        .where("queue_name = :queueName")
+                        .and("message_id = :messageId")
+                        .and("deliver_on > (current_timestamp + (:offset ||' seconds')::interval)")
+                        .bind("offset", updatedOffsetTimeInSecond)
+                        .bind("queueName", queueName)
+                        .bind("messageId", messageId);
 
         return queryWithTransaction(
-                        UPDATE_UNACK_TIMEOUT_IF_SHORTER,
-                        q ->
-                                q.addParameter(updatedOffsetTimeInSecond)
-                                        .addParameter(updatedOffsetTimeInSecond)
-                                        .addParameter(queueName)
-                                        .addParameter(messageId)
-                                        .addParameter(updatedOffsetTimeInSecond)
-                                        .executeUpdate())
+                        builder, QueryContext.write("queue_message"), q -> q.executeUpdate())
                 == 1;
     }
 
     @Override
     public void flush(String queueName) {
-        final String FLUSH_QUEUE = "DELETE FROM queue_message WHERE queue_name = ?";
-        executeWithTransaction(FLUSH_QUEUE, q -> q.addParameter(queueName).executeDelete());
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .raw("DELETE FROM queue_message")
+                        .where("queue_name = :queueName")
+                        .bind("queueName", queueName);
+        withTransaction(tx -> execute(tx, builder, QueryContext.write("queue_message")));
     }
 
     @Override
     public Map<String, Long> queuesDetail() {
-        final String GET_QUEUES_DETAIL =
-                "SELECT queue_name, (SELECT count(*) FROM queue_message WHERE popped = false AND queue_name = q.queue_name) AS size FROM queue q FOR SHARE SKIP LOCKED";
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .raw(
+                                "SELECT queue_name, (SELECT count(*) FROM queue_message WHERE popped = false AND queue_name = q.queue_name) AS size FROM queue q")
+                        .trailing("FOR SHARE SKIP LOCKED");
         return queryWithTransaction(
-                GET_QUEUES_DETAIL,
+                builder,
+                QueryContext.read("queue"),
                 q ->
                         q.executeAndFetch(
                                 rs -> {
@@ -276,15 +300,19 @@ public class PostgresQueueDAO extends PostgresBaseDAO implements QueueDAO {
     @Override
     public Map<String, Map<String, Map<String, Long>>> queuesDetailVerbose() {
         // @formatter:off
-        final String GET_QUEUES_DETAIL_VERBOSE =
-                "SELECT queue_name, \n"
-                        + "       (SELECT count(*) FROM queue_message WHERE popped = false AND queue_name = q.queue_name) AS size,\n"
-                        + "       (SELECT count(*) FROM queue_message WHERE popped = true AND queue_name = q.queue_name) AS uacked \n"
-                        + "FROM queue q FOR SHARE SKIP LOCKED";
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .raw(
+                                "SELECT queue_name, \n"
+                                        + "       (SELECT count(*) FROM queue_message WHERE popped = false AND queue_name = q.queue_name) AS size,\n"
+                                        + "       (SELECT count(*) FROM queue_message WHERE popped = true AND queue_name = q.queue_name) AS uacked \n"
+                                        + "FROM queue q")
+                        .trailing("FOR SHARE SKIP LOCKED");
         // @formatter:on
 
         return queryWithTransaction(
-                GET_QUEUES_DETAIL_VERBOSE,
+                builder,
+                QueryContext.read("queue"),
                 q ->
                         q.executeAndFetch(
                                 rs -> {
@@ -322,13 +350,21 @@ public class PostgresQueueDAO extends PostgresBaseDAO implements QueueDAO {
 
         getWithRetriedTransactions(
                 tx -> {
-                    String LOCK_TASKS =
-                            "SELECT queue_name, message_id FROM queue_message WHERE popped = true AND (deliver_on + (60 ||' seconds')::interval)  <  current_timestamp limit 1000 FOR UPDATE SKIP LOCKED";
+                    SqlQueryBuilder lockTasks =
+                            SqlQueryBuilder.create()
+                                    .select("queue_name", "message_id")
+                                    .from("queue_message")
+                                    .where("popped = true")
+                                    .and(
+                                            "(deliver_on + (60 ||' seconds')::interval) < current_timestamp")
+                                    .limit(1000)
+                                    .trailing("FOR UPDATE SKIP LOCKED");
 
                     List<QueueMessage> messages =
                             query(
                                     tx,
-                                    LOCK_TASKS,
+                                    lockTasks,
+                                    QueryContext.read("queue_message"),
                                     p ->
                                             p.executeAndFetch(
                                                     rs -> {
@@ -363,19 +399,21 @@ public class PostgresQueueDAO extends PostgresBaseDAO implements QueueDAO {
                         ;
                         try {
                             final List<String> msgIds = queueMessageMap.get(queueName);
-                            final String UPDATE_POPPED =
-                                    String.format(
-                                            "UPDATE queue_message SET popped = false WHERE queue_name = ? and message_id IN (%s)",
-                                            Query.generateInBindings(msgIds.size()));
+                            SqlQueryBuilder updatePopped =
+                                    SqlQueryBuilder.create()
+                                            .raw("UPDATE queue_message SET popped = false")
+                                            .where("queue_name = :queueName")
+                                            .bind("queueName", queueName);
+                            List<String> markers = new ArrayList<>(msgIds.size());
+                            for (int i = 0; i < msgIds.size(); i++) {
+                                String name = "msgId" + i;
+                                markers.add(":" + name);
+                                updatePopped.bind(name, msgIds.get(i));
+                            }
+                            updatePopped.and("message_id IN (" + String.join(", ", markers) + ")");
 
                             unacked =
-                                    query(
-                                            tx,
-                                            UPDATE_POPPED,
-                                            q ->
-                                                    q.addParameter(queueName)
-                                                            .addParameters(msgIds)
-                                                            .executeUpdate());
+                                    execute(tx, updatePopped, QueryContext.write("queue_message"));
                         } catch (Exception e) {
                             e.printStackTrace();
                         }
@@ -392,36 +430,45 @@ public class PostgresQueueDAO extends PostgresBaseDAO implements QueueDAO {
 
     @Override
     public void processUnacks(String queueName) {
-        final String PROCESS_UNACKS =
-                "UPDATE queue_message SET popped = false WHERE queue_name = ? AND popped = true AND (current_timestamp - (60 ||' seconds')::interval)  > deliver_on";
-        executeWithTransaction(PROCESS_UNACKS, q -> q.addParameter(queueName).executeUpdate());
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .raw("UPDATE queue_message SET popped = false")
+                        .where("queue_name = :queueName")
+                        .and("popped = true")
+                        .and("(current_timestamp - (60 ||' seconds')::interval) > deliver_on")
+                        .bind("queueName", queueName);
+        withTransaction(tx -> execute(tx, builder, QueryContext.write("queue_message")));
     }
 
     @Override
     public boolean resetOffsetTime(String queueName, String messageId) {
         long offsetTimeInSecond = 0; // Reset to 0
-        final String SET_OFFSET_TIME =
-                "UPDATE queue_message SET offset_time_seconds = ?, deliver_on = (current_timestamp + (? ||' seconds')::interval) \n"
-                        + "WHERE queue_name = ? AND message_id = ?";
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .raw(
+                                "UPDATE queue_message SET offset_time_seconds = :offset, deliver_on = (current_timestamp + (:offset ||' seconds')::interval)")
+                        .where("queue_name = :queueName")
+                        .and("message_id = :messageId")
+                        .bind("offset", offsetTimeInSecond)
+                        .bind("queueName", queueName)
+                        .bind("messageId", messageId);
 
         return queryWithTransaction(
-                SET_OFFSET_TIME,
-                q ->
-                        q.addParameter(offsetTimeInSecond)
-                                        .addParameter(offsetTimeInSecond)
-                                        .addParameter(queueName)
-                                        .addParameter(messageId)
-                                        .executeUpdate()
-                                == 1);
+                        builder, QueryContext.write("queue_message"), q -> q.executeUpdate())
+                == 1;
     }
 
     private boolean existsMessage(Connection connection, String queueName, String messageId) {
-        final String EXISTS_MESSAGE =
-                "SELECT EXISTS(SELECT 1 FROM queue_message WHERE queue_name = ? AND message_id = ?) FOR SHARE";
-        return query(
-                connection,
-                EXISTS_MESSAGE,
-                q -> q.addParameter(queueName).addParameter(messageId).exists());
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .select("1")
+                        .from("queue_message")
+                        .where("queue_name = :queueName")
+                        .and("message_id = :messageId")
+                        .bind("queueName", queueName)
+                        .bind("messageId", messageId)
+                        .trailing("FOR SHARE");
+        return query(connection, builder, QueryContext.read("queue_message"), q -> q.exists());
     }
 
     private void pushMessage(
@@ -434,43 +481,49 @@ public class PostgresQueueDAO extends PostgresBaseDAO implements QueueDAO {
 
         createQueueIfNotExists(connection, queueName);
 
-        String UPDATE_MESSAGE =
-                "UPDATE queue_message SET payload=?, deliver_on=(current_timestamp + (? ||' seconds')::interval) WHERE queue_name = ? AND message_id = ?";
-        int rowsUpdated =
-                query(
-                        connection,
-                        UPDATE_MESSAGE,
-                        q ->
-                                q.addParameter(payload)
-                                        .addParameter(offsetTimeInSecond)
-                                        .addParameter(queueName)
-                                        .addParameter(messageId)
-                                        .executeUpdate());
+        SqlQueryBuilder update =
+                SqlQueryBuilder.create()
+                        .raw(
+                                "UPDATE queue_message SET payload = :payload, deliver_on = (current_timestamp + (:offset ||' seconds')::interval)")
+                        .where("queue_name = :queueName")
+                        .and("message_id = :messageId")
+                        .bind("payload", payload)
+                        .bind("offset", offsetTimeInSecond)
+                        .bind("queueName", queueName)
+                        .bind("messageId", messageId);
+        int rowsUpdated = execute(connection, update, QueryContext.write("queue_message"));
 
         if (rowsUpdated == 0) {
-            String PUSH_MESSAGE =
-                    "INSERT INTO queue_message (deliver_on, queue_name, message_id, priority, offset_time_seconds, payload) VALUES ((current_timestamp + (? ||' seconds')::interval), ?,?,?,?,?) ON CONFLICT (queue_name,message_id) DO UPDATE SET payload=excluded.payload, deliver_on=excluded.deliver_on";
-            execute(
-                    connection,
-                    PUSH_MESSAGE,
-                    q ->
-                            q.addParameter(offsetTimeInSecond)
-                                    .addParameter(queueName)
-                                    .addParameter(messageId)
-                                    .addParameter(priority)
-                                    .addParameter(offsetTimeInSecond)
-                                    .addParameter(payload)
-                                    .executeUpdate());
+            SqlInsertBuilder insert =
+                    SqlInsertBuilder.create()
+                            .into("queue_message")
+                            .columnRaw(
+                                    "deliver_on",
+                                    "(current_timestamp + (? ||' seconds')::interval)",
+                                    List.of(offsetTimeInSecond))
+                            .column("queue_name", queueName)
+                            .column("message_id", messageId)
+                            .column("priority", priority)
+                            .column("offset_time_seconds", offsetTimeInSecond)
+                            .column("payload", payload)
+                            .onConflict("queue_name", "message_id")
+                            .doUpdateSet(
+                                    "payload = excluded.payload",
+                                    "deliver_on = excluded.deliver_on");
+            execute(connection, insert, QueryContext.write("queue_message"));
         }
     }
 
     private boolean removeMessage(Connection connection, String queueName, String messageId) {
-        final String REMOVE_MESSAGE =
-                "DELETE FROM queue_message WHERE queue_name = ? AND message_id = ?";
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .raw("DELETE FROM queue_message")
+                        .where("queue_name = :queueName")
+                        .and("message_id = :messageId")
+                        .bind("queueName", queueName)
+                        .bind("messageId", messageId);
         return query(
-                connection,
-                REMOVE_MESSAGE,
-                q -> q.addParameter(queueName).addParameter(messageId).executeDelete());
+                connection, builder, QueryContext.write("queue_message"), q -> q.executeDelete());
     }
 
     private List<Message> popMessages(
@@ -482,43 +535,46 @@ public class PostgresQueueDAO extends PostgresBaseDAO implements QueueDAO {
             }
         }
 
-        String POP_QUERY =
-                "WITH cte AS ("
-                        + "    SELECT queue_name, message_id "
-                        + "    FROM queue_message "
-                        + "    WHERE queue_name = ? "
-                        + "      AND popped = false "
-                        + "      AND deliver_on <= (current_timestamp + (1000 || ' microseconds')::interval) "
-                        + "    ORDER BY deliver_on, priority DESC, created_on "
-                        + "    LIMIT ? "
-                        + "    FOR UPDATE SKIP LOCKED "
-                        + ") "
-                        + "UPDATE queue_message "
-                        + "   SET popped = true "
-                        + "   FROM cte "
-                        + "   WHERE queue_message.queue_name = cte.queue_name "
-                        + "     AND queue_message.message_id = cte.message_id "
-                        + "     AND queue_message.popped = false "
-                        + "   RETURNING queue_message.message_id, queue_message.priority, queue_message.payload";
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .raw(
+                                "WITH cte AS ("
+                                        + "    SELECT queue_name, message_id "
+                                        + "    FROM queue_message "
+                                        + "    WHERE queue_name = :queueName "
+                                        + "      AND popped = false "
+                                        + "      AND deliver_on <= (current_timestamp + (1000 || ' microseconds')::interval) "
+                                        + "    ORDER BY deliver_on, priority DESC, created_on "
+                                        + "    LIMIT :count "
+                                        + "    FOR UPDATE SKIP LOCKED "
+                                        + ") "
+                                        + "UPDATE queue_message "
+                                        + "   SET popped = true "
+                                        + "   FROM cte "
+                                        + "   WHERE queue_message.queue_name = cte.queue_name "
+                                        + "     AND queue_message.message_id = cte.message_id "
+                                        + "     AND queue_message.popped = false "
+                                        + "   RETURNING queue_message.message_id, queue_message.priority, queue_message.payload")
+                        .bind("queueName", queueName)
+                        .bind("count", count);
 
         return query(
                 connection,
-                POP_QUERY,
+                builder,
+                QueryContext.read("queue_message"),
                 p ->
-                        p.addParameter(queueName)
-                                .addParameter(count)
-                                .executeAndFetch(
-                                        rs -> {
-                                            List<Message> results = new ArrayList<>();
-                                            while (rs.next()) {
-                                                Message m = new Message();
-                                                m.setId(rs.getString("message_id"));
-                                                m.setPriority(rs.getInt("priority"));
-                                                m.setPayload(rs.getString("payload"));
-                                                results.add(m);
-                                            }
-                                            return results;
-                                        }));
+                        p.executeAndFetch(
+                                rs -> {
+                                    List<Message> results = new ArrayList<>();
+                                    while (rs.next()) {
+                                        Message m = new Message();
+                                        m.setId(rs.getString("message_id"));
+                                        m.setPriority(rs.getInt("priority"));
+                                        m.setPayload(rs.getString("payload"));
+                                        results.add(m);
+                                    }
+                                    return results;
+                                }));
     }
 
     @Override
@@ -528,13 +584,23 @@ public class PostgresQueueDAO extends PostgresBaseDAO implements QueueDAO {
 
     private void createQueueIfNotExists(Connection connection, String queueName) {
         logger.trace("Creating new queue '{}'", queueName);
-        final String EXISTS_QUEUE =
-                "SELECT EXISTS(SELECT 1 FROM queue WHERE queue_name = ?) FOR SHARE";
-        boolean exists = query(connection, EXISTS_QUEUE, q -> q.addParameter(queueName).exists());
+        SqlQueryBuilder existsQuery =
+                SqlQueryBuilder.create()
+                        .select("1")
+                        .from("queue")
+                        .where("queue_name = :queueName")
+                        .bind("queueName", queueName)
+                        .trailing("FOR SHARE");
+        boolean exists =
+                query(connection, existsQuery, QueryContext.read("queue"), q -> q.exists());
         if (!exists) {
-            final String CREATE_QUEUE =
-                    "INSERT INTO queue (queue_name) VALUES (?) ON CONFLICT (queue_name) DO NOTHING";
-            execute(connection, CREATE_QUEUE, q -> q.addParameter(queueName).executeUpdate());
+            SqlInsertBuilder insert =
+                    SqlInsertBuilder.create()
+                            .into("queue")
+                            .column("queue_name", queueName)
+                            .onConflict("queue_name")
+                            .onConflictDoNothing();
+            execute(connection, insert, QueryContext.write("queue"));
         }
     }
 

@@ -23,6 +23,9 @@ import java.util.concurrent.TimeUnit;
 
 import javax.sql.DataSource;
 
+import org.conductoross.conductor.persistence.query.QueryContext;
+import org.conductoross.conductor.persistence.query.SqlInsertBuilder;
+import org.conductoross.conductor.persistence.query.SqlQueryBuilder;
 import org.springframework.retry.support.RetryTemplate;
 
 import com.netflix.conductor.common.metadata.tasks.PollData;
@@ -138,8 +141,16 @@ public class PostgresPollDataDAO extends PostgresBaseDAO implements PollDataDAO 
             boolean previousAutoCommitMode = tx.getAutoCommit();
             tx.setAutoCommit(true);
             try {
-                String GET_ALL_POLL_DATA = "SELECT json_data FROM poll_data ORDER BY queue_name";
-                return query(tx, GET_ALL_POLL_DATA, q -> q.executeAndFetch(PollData.class));
+                SqlQueryBuilder builder =
+                        SqlQueryBuilder.create()
+                                .select("json_data")
+                                .from("poll_data")
+                                .orderBy("queue_name");
+                return query(
+                        tx,
+                        builder,
+                        QueryContext.read("poll_data"),
+                        q -> q.executeAndFetch(PollData.class));
             } catch (Throwable th) {
                 throw new NonTransientException(th.getMessage(), th);
             } finally {
@@ -161,29 +172,30 @@ public class PostgresPollDataDAO extends PostgresBaseDAO implements PollDataDAO 
              * is that if we try the INSERT first, the sequence will be increased even if the ON CONFLICT happens. Since polling happens *a lot*, the sequence can increase
              * dramatically even though it won't be used.
              */
-            String UPDATE_POLL_DATA =
-                    "UPDATE poll_data SET json_data=?, modified_on=CURRENT_TIMESTAMP WHERE queue_name=? AND domain=?";
-            int rowsUpdated =
-                    query(
-                            connection,
-                            UPDATE_POLL_DATA,
-                            q ->
-                                    q.addJsonParameter(pollData)
-                                            .addParameter(pollData.getQueueName())
-                                            .addParameter(domain)
-                                            .executeUpdate());
+            SqlQueryBuilder update =
+                    SqlQueryBuilder.create()
+                            .raw(
+                                    "UPDATE poll_data SET json_data = :jsonData, modified_on = CURRENT_TIMESTAMP")
+                            .where("queue_name = :queueName")
+                            .and("domain = :domain")
+                            .bind("jsonData", toJson(pollData))
+                            .bind("queueName", pollData.getQueueName())
+                            .bind("domain", domain);
+            int rowsUpdated = execute(connection, update, QueryContext.write("poll_data"));
 
             if (rowsUpdated == 0) {
-                String INSERT_POLL_DATA =
-                        "INSERT INTO poll_data (queue_name, domain, json_data, modified_on) VALUES (?, ?, ?, CURRENT_TIMESTAMP) ON CONFLICT (queue_name,domain) DO UPDATE SET json_data=excluded.json_data, modified_on=excluded.modified_on";
-                execute(
-                        connection,
-                        INSERT_POLL_DATA,
-                        q ->
-                                q.addParameter(pollData.getQueueName())
-                                        .addParameter(domain)
-                                        .addJsonParameter(pollData)
-                                        .executeUpdate());
+                SqlInsertBuilder insert =
+                        SqlInsertBuilder.create()
+                                .into("poll_data")
+                                .column("queue_name", pollData.getQueueName())
+                                .column("domain", domain)
+                                .column("json_data", toJson(pollData))
+                                .columnRaw("modified_on", "CURRENT_TIMESTAMP")
+                                .onConflict("queue_name", "domain")
+                                .doUpdateSet(
+                                        "json_data = excluded.json_data",
+                                        "modified_on = excluded.modified_on");
+                execute(connection, insert, QueryContext.write("poll_data"));
             }
         } catch (NonTransientException e) {
             if (!e.getMessage().startsWith("ERROR: lastPollTime cannot be set to a lower value")) {
@@ -193,21 +205,30 @@ public class PostgresPollDataDAO extends PostgresBaseDAO implements PollDataDAO 
     }
 
     private PollData readPollData(Connection connection, String queueName, String domain) {
-        String GET_POLL_DATA =
-                "SELECT json_data FROM poll_data WHERE queue_name = ? AND domain = ?";
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .select("json_data")
+                        .from("poll_data")
+                        .where("queue_name = :queueName")
+                        .and("domain = :domain")
+                        .bind("queueName", queueName)
+                        .bind("domain", domain);
         return query(
                 connection,
-                GET_POLL_DATA,
-                q ->
-                        q.addParameter(queueName)
-                                .addParameter(domain)
-                                .executeAndFetchFirst(PollData.class));
+                builder,
+                QueryContext.read("poll_data"),
+                q -> q.executeAndFetchFirst(PollData.class));
     }
 
     private List<PollData> readAllPollData(String queueName) {
-        String GET_ALL_POLL_DATA = "SELECT json_data FROM poll_data WHERE queue_name = ?";
+        SqlQueryBuilder builder =
+                SqlQueryBuilder.create()
+                        .select("json_data")
+                        .from("poll_data")
+                        .where("queue_name = :queueName")
+                        .bind("queueName", queueName);
         return queryWithTransaction(
-                GET_ALL_POLL_DATA, q -> q.addParameter(queueName).executeAndFetch(PollData.class));
+                builder, QueryContext.read("poll_data"), q -> q.executeAndFetch(PollData.class));
     }
 
     private void flushData() {

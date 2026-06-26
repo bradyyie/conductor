@@ -39,8 +39,12 @@ public final class SqlInsertBuilder {
     private final List<Object> updateBinds = new ArrayList<>();
     private boolean doNothingOnConflict = false;
 
-    /** A column value: either a positional bind ({@code ?}) or a raw SQL expression. */
-    private record ColumnValue(Object value, boolean raw) {}
+    /**
+     * A column value: either a positional bind ({@code ?}), or a raw SQL expression rendered
+     * verbatim. A raw expression may itself contain {@code ?} placeholders, whose values are
+     * supplied in {@code rawBinds} (in order).
+     */
+    private record ColumnValue(Object value, boolean raw, List<Object> rawBinds) {}
 
     public static SqlInsertBuilder create() {
         return new SqlInsertBuilder();
@@ -56,7 +60,7 @@ public final class SqlInsertBuilder {
      * org_id} here.
      */
     public SqlInsertBuilder column(String name, Object value) {
-        columns.put(name, new ColumnValue(value, false));
+        columns.put(name, new ColumnValue(value, false, List.of()));
         return this;
     }
 
@@ -65,7 +69,16 @@ public final class SqlInsertBuilder {
      * e.g. {@code columnRaw("modified_on", "CURRENT_TIMESTAMP")}.
      */
     public SqlInsertBuilder columnRaw(String name, String sqlExpression) {
-        columns.put(name, new ColumnValue(sqlExpression, true));
+        return columnRaw(name, sqlExpression, List.of());
+    }
+
+    /**
+     * Adds (or replaces) a column whose VALUE is a raw SQL expression that itself contains {@code
+     * ?} placeholders, supplying their binds in order — e.g. {@code columnRaw("deliver_on",
+     * "(current_timestamp + (? ||' seconds')::interval)", List.of(seconds))}.
+     */
+    public SqlInsertBuilder columnRaw(String name, String sqlExpression, List<Object> exprBinds) {
+        columns.put(name, new ColumnValue(sqlExpression, true, List.copyOf(exprBinds)));
         return this;
     }
 
@@ -121,6 +134,7 @@ public final class SqlInsertBuilder {
             }
             if (column.raw()) {
                 placeholders.append((String) column.value());
+                binds.addAll(column.rawBinds());
             } else {
                 placeholders.append("?");
                 binds.add(column.value());

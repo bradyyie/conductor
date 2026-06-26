@@ -188,7 +188,11 @@ public class Query implements AutoCloseable {
      */
     public Query addParameters(Object... values) {
         for (Object v : values) {
-            if (v instanceof String) {
+            if (v == null) {
+                // Bind SQL NULL. Matches the original addParameter(String) behavior for nullable
+                // text/jsonb columns (e.g. payload, correlation_id) when routed via a builder.
+                addParameterInternal((ps, idx) -> ps.setString(idx, null));
+            } else if (v instanceof String) {
                 addParameter((String) v);
             } else if (v instanceof Integer) {
                 addParameter((Integer) v);

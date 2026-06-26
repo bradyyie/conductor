@@ -108,6 +108,29 @@ class SqlBuilderSeamTest {
     }
 
     @Test
+    void writeSeam_rawColumnWithEmbeddedBindKeepsPositionalOrder() {
+        // A column whose value is an expression containing its own bind (e.g. an interval),
+        // composed
+        // with ordinary bound columns; the embedded bind keeps column-insertion order.
+        SqlInsertBuilder ib =
+                SqlInsertBuilder.create()
+                        .into("queue_message")
+                        .columnRaw(
+                                "deliver_on",
+                                "(current_timestamp + (? ||' seconds')::interval)",
+                                List.of(30L))
+                        .column("queue_name", "q1")
+                        .column("message_id", "m1");
+
+        SqlInsertBuilder.Rendered r = ib.render();
+        assertEquals(
+                "INSERT INTO queue_message (deliver_on, queue_name, message_id) "
+                        + "VALUES ((current_timestamp + (? ||' seconds')::interval), ?, ?)",
+                r.sql());
+        assertEquals(List.of(30L, "q1", "m1"), r.binds());
+    }
+
+    @Test
     void writeSeam_composesColumnAndConflictTarget() {
         // OSS adapter builds the base upsert on its natural key.
         SqlInsertBuilder ib =

@@ -97,6 +97,22 @@ public class SqlQueryBuilderTest {
         assertEquals(List.of(7, 7), query.binds());
     }
 
+    @Test
+    public void postgresDoubleColonCastsAreNotTreatedAsNamedParams() {
+        SqlQueryBuilder query =
+                SqlQueryBuilder.create()
+                        .raw(
+                                "UPDATE queue_message SET deliver_on = (current_timestamp + (:secs ||' seconds')::interval)")
+                        .where("queue_name = :name")
+                        .bind("secs", 30L)
+                        .bind("name", "q1");
+        // :secs / :name are real params; ::interval must stay literal (not parsed as :interval).
+        assertEquals(
+                "UPDATE queue_message SET deliver_on = (current_timestamp + (? ||' seconds')::interval) WHERE queue_name = ?",
+                query.toSql());
+        assertEquals(List.of(30L, "q1"), query.binds());
+    }
+
     @Test(expected = IllegalStateException.class)
     public void missingBindFailsFast() {
         SqlQueryBuilder.create().select("*").from("t").where("a = :missing").toSql();

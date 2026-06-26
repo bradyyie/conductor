@@ -37,7 +37,9 @@ import java.util.regex.Pattern;
  */
 public final class SqlQueryBuilder {
 
-    private static final Pattern NAMED_PARAM = Pattern.compile(":([a-zA-Z_][a-zA-Z0-9_]*)");
+    // Matches :name but NOT the second colon of a Postgres "::type" cast (negative lookbehind on
+    // ':').
+    private static final Pattern NAMED_PARAM = Pattern.compile("(?<!:):([a-zA-Z_][a-zA-Z0-9_]*)");
 
     /**
      * Statement head: {@code SELECT ... FROM ...} (incl. joins), or an {@code UPDATE}/{@code
