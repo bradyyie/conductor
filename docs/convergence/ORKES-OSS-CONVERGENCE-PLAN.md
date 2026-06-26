@@ -547,4 +547,126 @@ Remove the global excludes in `orkes-conductor/build.gradle` (`exclude group: 'o
 
 ---
 
+---
+
+## 16. Execution log
+
+### Phase 0 — guardrails & cleanup ✅ (orkes branch)
+- `moduleDependencyReport` Gradle task (report-only) + tracked baseline (`docs/convergence/baseline-module-dependencies.txt`); 29 sideways violations recorded to burn down.
+- Removed 7 stale build-only orphan dirs (`auth/`, `rest/`, `metrics/`, `core-api/`, `core-decider/`, `oss-decider/`, `orkes-decider/`).
+
+### Phase 1 — OSS seams ✅ (OSS branch, additive, no behavior change)
+- `org.conductoross.conductor.core.introspection.*` — `WorkflowIntrospection` static facade + `RecordBuilder` + `WorkflowIntrospectionProvider` SPI + NoOp default (decision D1).
+- `org.conductoross.conductor.core.utils.TimeBasedIDGenerator` — opt-in `conductor.id.generator=time_based`, v1 time-ordered UUIDs, no org prefix (decision D2).
+- Verified: compiles, spotless clean, `publishToMavenLocal` → `org.conductoross:conductor-core:3.30.2-rc1` contains both seams.
+
+### D3 — system-task / mapper override seam ✅ (OSS branch)
+- `WorkflowSystemTask.isOverride()` / `TaskMapper.isOverride()` (default false).
+- `SystemTaskRegistry.byType()` collates by type preferring the override (ambiguous duplicates still fail fast); `asyncSystemTasks` derives from the override-resolved set; `getTaskMappers` prefers an overriding mapper while keeping non-override first-wins (preserves duplicate `KafkaPublishTaskMapper` tolerance). `SystemTaskRegistryTest` added.
+- Effect: enterprise can replace a built-in task/mapper via an `isOverride()=true` bean instead of `excludeFilters`; the Orkes `excludeFilters` list can be retired as overrides are backported or re-expressed.
+
+### Additional OSS seams ✅ (OSS branch, additive, tested)
+- **WorkflowExecutorOps extension seams** — `protected beforeStartWorkflow(input, def)` (invoked in `startWorkflow` + `startWorkflowIdempotent`; may throw to abort) and `protected onDecide(workflowId)` (top of `decide(String)`). No-ops in OSS; enable the enterprise executor to subclass instead of replacing. `WorkflowExecutorOpsSeamsTest` added.
+- **SqlQueryBuilder named-bind seam (§6.3.1 foundation)** — `org.conductoross.conductor.persistence.query.{SqlQueryBuilder,QueryContext}`: named `:markers` → positional `?`, so a subclass DAO can `.and("org_id = :orgId").bind(...)` on top of a base query without disturbing bind ordering. `QueryContext` is feature-neutral. `SqlQueryBuilderTest` added. (DAO adoption + `applyQueryExtensions` hooks remain the follow-up — the hardest seam, best done with a DB/Testcontainers environment and the enterprise subclasses.)
+
+Full `conductor-core` suite green after all of the above (813 tests, 0 failures, 7 skipped); `org.conductoross:conductor-core:3.30.2-rc1` re-published to maven local.
+
+### Phase 6 — cutover analysis (done) & reconciliation (in progress)
+
+Ground truth measured against the published OSS `conductor-core`:
+- All 39 OSS artifacts published to **maven local** (`conductor-core:3.30.2-rc1`, …) — Orkes can resolve them.
+- OSS green under Docker: `conductor-core` (814) + `conductor-postgres-persistence` (Testcontainers) pass.
+- Orkes baseline: `oss-core` + `core` compile today.
+- `oss-core` (150 files) vs OSS `conductor-core` (182): **20 Orkes-only**, **89 shared-but-modified (~9,400 diff lines), bidirectional** — OSS is *ahead* on several engine files (`ParametersUtils` recursive `${}`, `Event` two-phase, `WaitTaskMapper`, WMQ, file-storage), Orkes ahead on others.
+
+Cutover constraint: a class cannot live in both `oss-core` and `conductor-core` (duplicate-class/classpath conflict), so **`oss-core` can only be deleted once OSS `conductor-core` is a superset of every engine API the Orkes enterprise modules consume.** Therefore the path is: (1) backport Orkes engine deltas into OSS (de-enterprised, OSS staying green) until superset; (2) relocate the 20 Orkes-only enterprise classes (`CDCEventPublisher/Sink`, `OrgConfigDAO`, `ResourceSharingDAO`, `IdempotencyDAO`, `EnvironmentDAO`, `WorkflowRateLimiterDAO`, `MetadataExecutionDAO`, Orkes evaluator stack, `ApplicationException`) into Orkes `core`; (3) flip 19 modules' `project(':orkes-conductor-oss-core')` → `org.conductoross:conductor-core`, delete `oss-core`, iterate compile→fix; (4) green both suites (Orkes harness/e2e via Postgres+Redis in Docker). Steps are individually verifiable; neither suite is left broken.
+
+### Phase 6 — cutover EXECUTION status (in progress)
+
+**Done & verified:**
+- Cutover proven mechanical (not a 9.4k-line rewrite): Orkes `core` compiles against published OSS `conductor-core` with only a tiny API gap.
+- Relocated all 20 Orkes-only `oss-core` classes → Orkes `core` (+ `ApplicationException` → `common`, the universal base); renamed Orkes `ConsoleBridge` → `OrkesConsoleBridge` (OSS owns the name); added GraalVM deps to `core`.
+- Flipped all 19 modules `oss-core` → `org.conductoross:conductor-core`; bumped `revConductor=3.30.2-rc1`; dropped the `conductor-core` exclude; **deleted `oss-core`** (settings + dir).
+- Backported to OSS `conductor-core` (additive, **OSS suite green: 815/0**): listener `onWorkflowCreated`/`onTasksCreated`; `WorkflowModel` fields `rateLimitKey`/`rateLimited`/`systemMetadata`/`history`/`workflowConsistency`; `WorkflowConsistency` enum; `StartWorkflowInput.workflowConsistency`; `WorkflowExecutor.addTaskToQueue`; `WorkflowSystemTask.getIdentity`; `ParametersUtils.substituteSecret`; `ExecutionDAO` event helpers/enums.
+- Modules compiling green: `core`, `common`, `queues`, `redis-configuration`, `scheduler-oss`, `proto`.
+
+**Remaining: 364 compile errors from a bounded root set** (many fan out from one symbol, e.g. `Monitors.CriticalError` → 62):
+1. **Clean backports to OSS** (mechanical, ~majority of errors): `Monitors` additions (`CriticalError` enum + `recordCriticalError`, `recordWorkflowRateLimited`, `recordBatchJobExecutionTime`, `recordDatadogPublishFailure`, `recordWorkflowStart/Complete`, `recordTaskCreated/StartCount/Complete`, and their event-counter/timer helpers); `ConductorProperties` getters (`getEventExecutionRetentionDuration`, `getMetadataCacheTTL`, `getEventCleanupLoopSize`, `isFallbackEnabled`); `ExecutionDAOFacade` methods (`getTaskIdsForWorkflow`, `getWorkflowWithTasks`, `removeWorkflowPayload`, `removeTaskPayload`, `getRunningWorkflowCountByName`, `getInProgressTaskCountByName`, `writesToArchiveShards`).
+2. **Enterprise/OSS split decisions** (NOT plain backports — must stay enterprise or be de-orged): `Monitors` org-tagged size metrics (`recordTaskSize`/`recordWorkflowSize` use `sizeMetricOrgId()` → keep enterprise `OrkesMonitors`, route Orkes callers there); Orkes-typed `ExecutionDAO`/`ExecutionDAOFacade` event-message methods (`addEventMessage`/`updateEventMessage`/`getEventMessages`/`getEventExecutions` take `io.orkes…EventMessage`/`ExtendedEventExecution`) → define an enterprise `OrkesExecutionDAO extends ExecutionDAO`, have the Orkes Postgres/Redis DAOs implement it, and reference that type at the Orkes call sites.
+3. After compile-green: run Orkes test-harness/e2e (Postgres+Redis via Docker) and fix runtime/bean wiring (the `isOverride()` seam + `@Primary` replace the old `excludeFilters`).
+
+Estimate: the clean backports are a few focused hours; the enterprise-split items are deliberate (interface extraction + call-site retyping). Both Orkes and OSS branches are committed at each green checkpoint; OSS never left broken.
+
+### Phase 6 — cutover progress log (live)
+
+Reduced Orkes from a feared ~9.4k‑line engine merge to a **bounded, enumerated remainder**. Structural cutover is DONE (oss‑core deleted; 19 modules flipped to `org.conductoross:conductor-core`; 20 classes relocated). OSS is a superset for ~35 engine APIs and **stays green (815/0)**. Orkes main‑compile error count drove **9.4k‑fear → 364 → 286 → 218 → 206 → 160**.
+
+Backported to OSS (additive): listeners `onWorkflowCreated`/`onTasksCreated`; `WorkflowModel` `rateLimitKey`/`rateLimited`/`systemMetadata`/`history`/`workflowConsistency`; `WorkflowConsistency`; `StartWorkflowInput.workflowConsistency`; `WorkflowExecutor.addTaskToQueue`; `WorkflowSystemTask.getIdentity`; `ParametersUtils.substituteSecret`; `ExecutionDAO` event helpers + `getTaskIdsForWorkflow`/`getWorkflowWithTasks`/`removeWorkflowPayload`/`removeTaskPayload`/`getRunningWorkflowCountByName`/`getInProgressTaskCountByName`/`writesToArchiveShards`; `ExecutionDAOFacade` delegators; `Monitors` `CriticalError`+recorders (feature‑agnostic); `ConductorProperties` event/cache props. Enterprise EventMessage split DONE via `io.orkes.conductor.dao.OrkesExecutionDAO`.
+
+**Remaining 160 main‑compile errors — three classes, each needing deliberate handling:**
+1. **Signature CONFLICTS (~16)** — Orkes changed shared‑interface return types/args that clash with OSS and can't both exist: `ExecutionDAO.removeTask(String)` (Orkes `TaskModel` vs OSS `boolean`); `MetadataDAO.updateTaskDef(TaskDef)` (Orkes `String` vs OSS `TaskDef`); `getRunningWorkflowIds` arity. **Decision needed:** adopt OSS signature and adapt Orkes callers, OR add parallel Orkes methods on `OrkesExecutionDAO`/`OrkesMetadataDAO` (e.g. `TaskModel removeTaskAndReturn(String)`). Do NOT change OSS return types (breaks OSS impls/tests).
+2. **`@Override` mismatches (~90)** — Orkes DAO impls override Orkes‑interface methods absent from OSS. Per method: backport (OSS‑typed) to OSS as opt‑in default, or move to an Orkes‑extended DAO interface (like `OrkesExecutionDAO`) + retype callers, or drop `@Override` where it's a genuine extra.
+3. **conductor‑ai version skew (~30+)** — AI config constructors (`OpenAIConfiguration`, `AnthropicConfiguration`, …) changed between conductor‑ai `3.30.0.rc8`→`3.30.2-rc1` (from the `revConductor` bump). **Decision:** pin conductor‑ai independently, or update the Orkes AI configs to the new constructors.
+
+After main‑compile green: `compileTestJava` (a few test‑ctor/`verify(...)` updates from the EventMessage retyping), then Orkes test‑harness/e2e under Docker, then bean‑wiring via `isOverride()`/`@Primary` (retire `excludeFilters`). Every OSS change is committed green; Orkes is committed at each WIP checkpoint with the exact remainder recorded.
+
+### Phase 2 — engine backports (OSS branch) — in progress
+Done (clean, independent, tested):
+- **ExclusiveJoin** — reload joined task via `WorkflowExecutor.getTask(id)` for full output on completion; kept OSS permissive + failure aggregation. `ExclusiveJoinTest` added.
+- **ForkJoinDynamicTaskMapper** — nested-fork `parentTaskReferenceName` stamping + type-safe `getStringInput` (clear `TerminateWorkflowException` instead of `ClassCastException`). Type-safety test added.
+- **SubWorkflowTaskMapper** — version 0→null, null-safe name, optional runtime version resolution via new `conductor.app.resolve-sub-workflow-version-at-runtime` (default false). Deferred-resolution test added.
+- **Join (large-fork)** — `captureOutput` toggle: skip copying every forked output into the JOIN output when `joinOn.size() >= LARGE_FORK_LIMIT` (500), overridable per task. Preserves OSS async model + permissive/SYNC/backoff. Capture-toggle tests added.
+- **SimpleTaskMapper** — metadata-store fallback when a SIMPLE task has no inline definition (then default `TaskDef(name)`, cached back), and `baseType` override (scheduled task takes the def's base type). RBAC stays enterprise via the D3 `isOverride()` seam. baseType/fallback test added.
+
+Assessed — no clean backport needed:
+- **DoWhile** — OSS `DoWhile` is already *ahead* of `OrkesDoWhile`: richer list-iteration (`items`/`loopItem`/`loopIndex`), retry handling via highest-retry-count `relevantTasks` selection, and the successor-scheduling guard. The only Orkes-unique bits are the pluggable-evaluator/console path (the larger evaluator-stack decision below) and a per-iteration task reload (unclear value). No model-independent improvement to port.
+
+Remaining (larger, dedicated PRs / decisions — some may stay enterprise):
+- **Join sync model + script/JS join, and `JoinTaskMapper`** — the Orkes "EfficientJoin v2" is *synchronous* (`isAsync()=false`) with expression-based joins via the evaluator stack (`OrkesJavascriptEvaluator`/`graaljs`/`ConsoleBridge`) + `addTaskExecLog` console capture. OSS already ships the evaluator stack (incl. `ConsoleBridge`), but reconciling the sync model + script path with OSS's async `Join` is an opinionated change (may stay enterprise). If pursued, `JoinTaskMapper` must seed join input from the JOIN task's declared `inputParameters` **by copy** (the Orkes version mutates the definition in place) and keep OSS `isolationGroupId` — so it lands with `Join`.
+- **WorkflowExecutorOps engine core + `protected` seams (§6.3.4) + DeciderTask** — backport sync exec / idempotency / sync-subworkflow / parallel decide-start; `DeciderTask` (Runnable wrapper) lands with the parallel executor that consumes it. Enterprise re-expresses `OrkesWorkflowExecutor extends WorkflowExecutorOps` over the seams.
+
+### Deferred follow-ups
+- ~~Add a persisted `idempotencyKey` to `WorkflowModel` to enable sub-workflow idempotency-key inheritance.~~ ✅ Done: `WorkflowModel.idempotencyKey` (set on start, auto-mapped in `toWorkflow()`); `SubWorkflowTaskMapper` now inherits the parent key when a strategy is set but no key. (Persistence json round-trip validated by the persistence modules' Testcontainers tests.)
+
+### Status snapshot & the remaining program
+
+**OSS branch — landed & verified (full `conductor-core` suite green: 814 tests, 0 failures):**
+- Seams: introspection SPI, `TimeBasedIDGenerator`, D3 system-task/mapper override (`isOverride()`), `WorkflowExecutorOps` `beforeStartWorkflow`/`onDecide`, `SqlQueryBuilder` named-bind query seam.
+- Backports: ExclusiveJoin, ForkJoinDynamicTaskMapper, SubWorkflowTaskMapper, Join (large-fork), SimpleTaskMapper.
+- `org.conductoross:conductor-core:3.30.2-rc1` published to maven local with all of the above.
+
+**Orkes branch — landed:** convergence plan + execution log, Phase 0 dependency-rule guardrail + baseline (29 sideways violations recorded).
+
+**Remaining work is the larger structural program** (each requires the enterprise build + a DB/Docker environment, and in most cases the Phase 6 artifact cutover, so it cannot be completed purely OSS-side):
+1. **Persistence org_id seam adoption** — migrate OSS `*-persistence` DAOs onto `SqlQueryBuilder` and add no-op `applyQueryExtensions`/`applyWriteExtensions` hooks; validate on `ExecutionDAO` insert/upsert (org_id in PK / `ON CONFLICT`) with Testcontainers. Hardest seam.
+2. **WorkflowExecutorOps engine-core backport** — sync exec / idempotency strategies / sync sub-workflow / parallel decide-start + `DeciderTask`; the executor seams are already in place for the enterprise subclass.
+3. **Enterprise re-expression** — once OSS artifacts are consumed (Phase 6): `OrkesWorkflowExecutor extends WorkflowExecutorOps`, enterprise task/mapper subclasses marked `isOverride()=true` (retire `excludeFilters`), enterprise persistence subclasses overriding the query hooks for org_id.
+4. **Hexagonal decoupling (orkes)** — burn down the 29 sideways violations (persistence → scheduler/api-gateway/integration/human/api-orchestration, etc.); flip `moduleDependencyReport` to fail-on-new.
+5. **Repo cutover & publishing (Phase 6)** — delete `oss-core`, drop the `org.conductoross:conductor-core` / `com.netflix.conductor` excludes, depend on published OSS artifacts; stand up CI publishing (GitHub Packages/S3); branded composite `server-enterprise`.
+
+
+### Phase 6 — cutover COMPLETE: both repos compile + core suites green ✅
+
+**Structural cutover (orkes branch):** `oss-core` deleted; 20 Orkes-only classes relocated into `core` (+ `ApplicationException` into `common`); 19 modules flipped to `org.conductoross:conductor-core:3.30.2-rc1` (`revConductor`=3.30.2-rc1, `revConductorAi` pinned 3.30.0.rc8); `conductor-core`/`com.netflix.conductor` excludes removed.
+
+**Enterprise interfaces (can't live on feature-agnostic OSS):**
+- `io.orkes.conductor.dao.OrkesExecutionDAO extends ExecutionDAO` — Orkes EventMessage/ExtendedEventExecution persistence (addEventMessage/updateEventMessage/getEventMessages/getEventExecutions + addEventExecution/updateEventExecution/removeEventExecution overloads). Implemented by Postgres/MySQL/Redis/Archive execution DAOs.
+- `io.orkes.conductor.dao.OrkesMetadataDAO extends MetadataDAO` — org/permission lookups (getWorkflowDefs(name,subjects,accesses), getTaskDefsWithPermissions, getShortenedWorkflowDefs, getWorkflowsByOrg, getTasksByOrg). Implemented by AbstractMetadataDAO (postgres) + MySQLMetadataDAO.
+
+**OSS superset backports (additive, neutral — no org concepts):** `ExecutionDAOFacade` extension seams (protected pushToDeciderQueue/removeFromDeciderQueue, createOnly, removeEventTask, sendTaskStatusChange no-op, getRunningWorkflowCountByName(int)); `RateLimitingDAO.getPostponeDurationForTask` (static); `IndexDAO.searchTask` default; `TaskModel.statusListenerSink`; `StartWorkflowInput.createdBy/notifications`; `WorkflowExecutor.upgradeRunningWorkflowToVersion` default; `ConductorProperties` (taskUpdate/workflowStart executor thread counts, syncSystemTaskMaxCallbackAfterSeconds, honorSyncSystemTaskCallbackAfter); `Monitors.recordWorkflowStart/Complete` + **payload-size summaries** (`*_size_bytes/_ratio`, gated by `setSizeLimitMetricsEnabled`, neutral tags).
+
+**Enterprise overrides reconciled to OSS signatures:** `OrkesExecutionDAOFacade` (9-arg super ctor, overrides the new OSS seams), `OrkesWorkflowExecutor` (implements `startWorkflowIdempotent`, overrides `upgradeRunningWorkflowToVersion`), `OrkesMetadataService` (OrkesMetadataDAO + `MetadataChangeListener` ctor arg + `getLatestWorkflow(orgId,name)`), `SubWorkflowSync` (IDGenerator), archive configs (primaryExecutionDAO typed OrkesExecutionDAO).
+
+**Not-found exception regression fixed:** old Orkes `NotFoundException extends ApplicationException` (Code.NOT_FOUND → 404 via `ApplicationExceptionMapper`); OSS `NotFoundException extends RuntimeException` (no Code, not mapped). Restored by throwing `com.netflix.conductor.core.exception.ApplicationException(Code.NOT_FOUND,…)` at the 12 Orkes not-found throw-sites (ServiceRegistryService, MySQLMetadataDAO, SchedulerService; scheduler-oss now depends on orkes-conductor-common).
+
+**Verification (this milestone):**
+- OSS `conductor-core`: **815 tests, 0 failures** (7 skipped) — invariant held across all backports.
+- Orkes `compileJava` + `compileTestJava`: **BUILD SUCCESSFUL** (all modules). Test-compile fixes were test-only (retype to enterprise DAOs, removeTask→boolean, createTaskDef/updateTaskDef→TaskDef, ctor arity updates, CustomRetryPolicy→Postgres/MySQLConfiguration).
+- Orkes runtime suites green: postgres-persistence **435/0**; mysql metadata+ratelimiter+execution+scheduler **246/0**; redis OrkesRedisExecutionDAOTest **26/0** (incl. 3 payload-size-metric tests); archive ArchivedExecutionDAO* incl. distributed-chaos **green**.
+- NOTE: full mysql-persistence suite spins one container per class and exhausts Docker locally (env, not code) — validate affected classes or run with constrained parallelism. A corrupted local `postgres:14` layer caused 2 transient audit-test failures; fixed by `docker pull`.
+
+**Remaining:** run server/integration/event-processor/api-orchestration/scheduler/webhooks/human/workers suites under Docker; retire `excludeFilters` in favor of `isOverride()`/`@Primary` bean wiring; CI publishing + branded composite; hexagonal sideways-dep burndown.
+
+---
+
 *End of plan. This document is the single source of truth for the convergence effort; update it via PR as decisions in §14 are resolved.*
